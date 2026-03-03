@@ -365,7 +365,8 @@
         <div class="panel-card" style="margin-top:20px">
           <h3>Face Scan Results</h3>
           <p style="font-size:0.82rem; color:var(--text2); margin-bottom:12px">
-            Scans Google, Yandex, TinEye + social media platforms. Results stream in as they're found.
+            7 search engines (Google, Yandex, Bing, TinEye, Baidu, SauceNAO, KarmaDecay) &bull;
+            31 social platforms &bull; 29-site username cross-check &bull; People-search databases
           </p>
           <div id="scanStatus" class="status" style="padding:8px 0">Upload an image to scan</div>
           <div id="scanIdentified" class="hidden"></div>
@@ -857,18 +858,29 @@
 
               if (currentEvent === "engine_result") {
                 engineStatuses.push(data);
+                // Live engine status update
+                let liveHtml = '<div style="font-size:0.75rem;margin-top:6px">';
+                for (const es of engineStatuses) {
+                  const icon = es.status === "ok" ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--danger)">&#10007;</span>';
+                  liveHtml += '<span style="margin-right:10px">' + icon + ' ' + escapeHtml(es.engine);
+                  if (es.status === "ok") liveHtml += ' (' + (es.match_count||0) + ')';
+                  liveHtml += '</span>';
+                }
+                liveHtml += '</div>';
+                enginesEl.classList.remove("hidden");
+                enginesEl.innerHTML = liveHtml;
               }
 
               if (currentEvent === "identified") {
                 identifiedEl.classList.remove("hidden");
                 identifiedEl.innerHTML = '<div class="scan-identified">' +
                   '<div class="name">' + escapeHtml(data.name) + '</div>' +
-                  '<div class="sub">Person identified by reverse image search</div>' +
+                  '<div class="sub">Person identified by reverse image search engines</div>' +
                   '</div>';
               }
 
-              if (currentEvent === "social_results") {
-                for (const r of data.results) {
+              if (currentEvent === "social_results" || currentEvent === "username_results" || currentEvent === "name_variation_results") {
+                for (const r of (data.results || [])) {
                   socialEl.innerHTML += renderScanMatch(r);
                 }
               }
@@ -916,10 +928,19 @@
                   let socialHtml = '';
                   const platformColors = {
                     "Instagram": "#E4405F", "Twitter/X": "#1DA1F2", "Facebook": "#1877F2",
-                    "LinkedIn": "#0A66C2", "TikTok": "#000000", "YouTube": "#FF0000",
+                    "LinkedIn": "#0A66C2", "TikTok": "#69C9D0", "YouTube": "#FF0000",
                     "Pinterest": "#BD081C", "Reddit": "#FF4500", "Tumblr": "#36465D",
-                    "VK": "#4680C2", "GitHub": "#6e5494", "Wikipedia": "#000",
+                    "VK": "#4680C2", "GitHub": "#6e5494", "Wikipedia": "#636466",
                     "IMDb": "#F5C518", "Flickr": "#0063DC", "DeviantArt": "#05CC47",
+                    "Twitch": "#9146FF", "Snapchat": "#FFFC00", "Threads": "#000",
+                    "Bluesky": "#0085FF", "Mastodon": "#6364FF", "Medium": "#00ab6c",
+                    "Quora": "#B92B27", "Spotify": "#1DB954", "SoundCloud": "#FF5500",
+                    "MySpace": "#030303", "Weibo": "#E6162D", "Odnoklassniki": "#EE8208",
+                    "Discord": "#5865F2", "Patreon": "#FF424D", "OnlyFans": "#00AFF0",
+                    "Behance": "#1769FF", "Dribbble": "#EA4C89", "500px": "#0099e5",
+                    "ASKfm": "#DB3552", "About.me": "#00405d", "Linktree": "#43E55E",
+                    "Steam": "#1b2838", "Letterboxd": "#00d735", "People Search": "#6c5ce7",
+                    "Wikidata": "#006699", "Pixiv": "#0096FA", "ArtStation": "#13AFF0",
                   };
                   for (const [platform, matches] of Object.entries(data.social_media)) {
                     const color = platformColors[platform] || "var(--accent)";
@@ -943,7 +964,16 @@
                   otherEl.innerHTML = otherHtml;
                 }
 
-                // Summary
+                // Summary bar
+                let summaryHtml = '<div style="padding:12px;border-radius:var(--radius);background:var(--surface);margin-top:12px;font-size:0.82rem;text-align:center">';
+                summaryHtml += '<strong>' + (data.total_matches || 0) + '</strong> total matches across ';
+                summaryHtml += '<strong>' + (data.social_platforms_found || 0) + '</strong> social platforms';
+                if (data.usernames_found?.length) {
+                  summaryHtml += '<br><span style="color:var(--text2)">Usernames discovered: ' + data.usernames_found.map(u => '<strong>@' + escapeHtml(u) + '</strong>').join(', ') + '</span>';
+                }
+                summaryHtml += '</div>';
+                otherEl.innerHTML = summaryHtml + otherEl.innerHTML;
+
                 if (!data.total_matches) {
                   socialEl.innerHTML = '<div style="color:var(--text2);padding:12px;text-align:center">No matches found. Try uploading a clearer, front-facing photo.</div>';
                 }
