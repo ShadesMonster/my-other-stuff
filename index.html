@@ -324,10 +324,15 @@
               <div id="identifyPanel" class="hidden" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
                 <div style="font-size:0.82rem;color:var(--text2);margin-bottom:8px">
                   <strong style="color:var(--accent)">Identify this person:</strong>
-                  Search engines (especially Google &amp; Yandex) can often identify who someone is from their face.
-                  Click below to search with just the cropped face.
+                  Search engines can often identify who someone is from their face.
+                  Searches across Google, Yandex, Bing, TinEye, social media, and dedicated face search engines.
                 </div>
+                <div style="font-size:0.75rem;color:var(--text2);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Reverse Image Search</div>
                 <div id="identifyButtons" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+                <div style="font-size:0.75rem;color:var(--text2);margin:10px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Social Media Face Search</div>
+                <div id="socialButtons" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+                <div style="font-size:0.75rem;color:var(--text2);margin:10px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Dedicated Face Search Engines</div>
+                <div id="faceEngineButtons" style="display:flex;flex-wrap:wrap;gap:6px"></div>
               </div>
             </div>
             <div class="panel-card">
@@ -889,6 +894,225 @@
       available: snap.available, status: snap.status };
   }
 
+  // ── Web-wide search (Google, Bing, DuckDuckGo via redirect) ──
+  function buildWebSearchLinks(query) {
+    return {
+      source: "Web Search Engines",
+      name: "Search the entire web for \"" + query + "\"",
+      note: "Click each link to open a full web search in a new tab",
+      _webLinks: [
+        { name: "Google", url: "https://www.google.com/search?q=" + encodeURIComponent(query) },
+        { name: "Google News", url: "https://www.google.com/search?q=" + encodeURIComponent(query) + "&tbm=nws" },
+        { name: "Google Images", url: "https://www.google.com/search?q=" + encodeURIComponent(query) + "&tbm=isch" },
+        { name: "Bing", url: "https://www.bing.com/search?q=" + encodeURIComponent(query) },
+        { name: "DuckDuckGo", url: "https://duckduckgo.com/?q=" + encodeURIComponent(query) },
+        { name: "Yahoo", url: "https://search.yahoo.com/search?p=" + encodeURIComponent(query) },
+        { name: "Yandex", url: "https://yandex.com/search/?text=" + encodeURIComponent(query) },
+        { name: "Baidu", url: "https://www.baidu.com/s?wd=" + encodeURIComponent(query) },
+      ]
+    };
+  }
+
+  // ── Social Media search links (direct profile URL checks + search) ──
+  function buildSocialMediaLinks(query) {
+    const q = encodeURIComponent(query);
+    return {
+      source: "Social Media Search",
+      name: "Search social media for \"" + query + "\"",
+      note: "Direct search links — click to search each platform",
+      _webLinks: [
+        { name: "Twitter/X", url: "https://x.com/search?q=" + q + "&f=user" },
+        { name: "Instagram (via Google)", url: "https://www.google.com/search?q=site:instagram.com+" + q },
+        { name: "Facebook", url: "https://www.facebook.com/search/people/?q=" + q },
+        { name: "LinkedIn (via Google)", url: "https://www.google.com/search?q=site:linkedin.com/in+" + q },
+        { name: "TikTok (via Google)", url: "https://www.google.com/search?q=site:tiktok.com+" + q },
+        { name: "YouTube", url: "https://www.youtube.com/results?search_query=" + q },
+        { name: "Pinterest", url: "https://www.pinterest.com/search/users/?q=" + q },
+        { name: "Tumblr (via Google)", url: "https://www.google.com/search?q=site:tumblr.com+" + q },
+        { name: "Reddit", url: "https://www.reddit.com/search/?q=" + q + "&type=user" },
+        { name: "VK", url: "https://vk.com/search?c%5Bq%5D=" + q + "&c%5Bsection%5D=people" },
+        { name: "Snapchat", url: "https://www.snapchat.com/add/" + q },
+        { name: "Spotify", url: "https://open.spotify.com/search/" + q },
+        { name: "SoundCloud", url: "https://soundcloud.com/search/people?q=" + q },
+        { name: "Twitch", url: "https://www.twitch.tv/" + q },
+        { name: "Discord (via Google)", url: "https://www.google.com/search?q=site:discord.com+" + q },
+      ]
+    };
+  }
+
+  // ── Professional & forum links ──
+  function buildProfessionalLinks(query) {
+    const q = encodeURIComponent(query);
+    return {
+      source: "Professional & Forum Search",
+      name: "Professional networks & forums for \"" + query + "\"",
+      note: "Search professional platforms, forums, and communities",
+      _webLinks: [
+        { name: "GitHub", url: "https://github.com/search?q=" + q + "&type=users" },
+        { name: "GitLab", url: "https://gitlab.com/search?search=" + q + "&nav_source=navbar" },
+        { name: "Stack Overflow", url: "https://stackoverflow.com/users?tab=Reputation&filter=all&search=" + q },
+        { name: "LinkedIn (via Google)", url: "https://www.google.com/search?q=%22" + q + "%22+site:linkedin.com" },
+        { name: "AngelList", url: "https://www.google.com/search?q=%22" + q + "%22+site:angel.co" },
+        { name: "Crunchbase", url: "https://www.crunchbase.com/textsearch?q=" + q },
+        { name: "Medium", url: "https://medium.com/search?q=" + q },
+        { name: "Quora", url: "https://www.quora.com/search?q=" + q },
+        { name: "Hacker News", url: "https://hn.algolia.com/?q=" + q },
+        { name: "DEV.to", url: "https://dev.to/search?q=" + q },
+        { name: "Dribbble", url: "https://dribbble.com/search/" + q },
+        { name: "Behance", url: "https://www.behance.net/search/users?search=" + q },
+        { name: "Kaggle", url: "https://www.kaggle.com/search?q=" + q },
+        { name: "ResearchGate", url: "https://www.researchgate.net/search?q=" + q },
+        { name: "Google Scholar", url: "https://scholar.google.com/scholar?q=%22" + q + "%22" },
+      ]
+    };
+  }
+
+  // ── Public records & people search links ──
+  function buildPeopleSearchLinks(query) {
+    const q = encodeURIComponent(query);
+    return {
+      source: "People Search Engines",
+      name: "People search engines for \"" + query + "\"",
+      note: "These aggregate public records, social media, and web data. Results vary by country.",
+      _webLinks: [
+        { name: "Pipl (via Google)", url: "https://www.google.com/search?q=%22" + q + "%22+site:pipl.com" },
+        { name: "Spokeo", url: "https://www.spokeo.com/" + q },
+        { name: "WhitePages", url: "https://www.whitepages.com/name/" + query.replace(/ /g, "-") },
+        { name: "ThatsThem", url: "https://thatsthem.com/name/" + query.replace(/ /g, "-") },
+        { name: "TruePeopleSearch", url: "https://www.truepeoplesearch.com/results?name=" + q },
+        { name: "Webmii", url: "https://webmii.com/people?n=%22" + q + "%22" },
+        { name: "Namechk", url: "https://namechk.com/" },
+        { name: "WhatsMyName", url: "https://whatsmyname.app/" },
+        { name: "Instant Username", url: "https://instantusername.com/#/" + q },
+        { name: "UserSearch.org", url: "https://usersearch.org/results_normal.php?URL_username=" + q },
+      ]
+    };
+  }
+
+  // ── Twitch API (public, no auth needed) ──
+  // Twitch requires client ID, but we can check via redirect
+
+  // ── Archive.org people search ──
+  async function lookupArchiveOrg(query) {
+    const data = await safeFetch("https://archive.org/advancedsearch.php?q=creator%3A%22" + encodeURIComponent(query) + "%22&output=json&rows=3");
+    if (!data || !data.response || !data.response.docs || !data.response.docs.length) return null;
+    return data.response.docs.slice(0, 2).map(d => ({
+      source: "Internet Archive",
+      profile_url: "https://archive.org/details/" + d.identifier,
+      name: d.title,
+      creator: d.creator,
+      type: d.mediatype,
+      date: d.date,
+      downloads: d.downloads
+    }));
+  }
+
+  // ── Hugging Face (AI/ML profiles) ──
+  async function lookupHuggingFace(username) {
+    const data = await safeFetch("https://huggingface.co/api/users/" + encodeURIComponent(username) + "/overview");
+    if (!data) return null;
+    return { source: "Hugging Face", profile_url: "https://huggingface.co/" + encodeURIComponent(username),
+      name: data.fullname || username, avatar: data.avatarUrl,
+      num_models: data.numModels, num_datasets: data.numDatasets,
+      num_spaces: data.numSpaces };
+  }
+
+  // ── DuckDuckGo Instant Answer (structured info) ──
+  async function lookupDuckDuckGo(query) {
+    const data = await safeFetch("https://api.duckduckgo.com/?q=" + encodeURIComponent(query) + "&format=json&no_redirect=1");
+    if (!data) return null;
+    const results = [];
+    if (data.Abstract) {
+      results.push({
+        source: "DuckDuckGo Abstract", profile_url: data.AbstractURL,
+        name: data.Heading || query, description: data.Abstract,
+        image: data.Image ? "https://duckduckgo.com" + data.Image : null,
+        source_name: data.AbstractSource
+      });
+    }
+    if (data.Infobox?.content?.length) {
+      const info = {};
+      data.Infobox.content.slice(0, 8).forEach(c => { info[c.label] = c.value; });
+      if (Object.keys(info).length) {
+        results.push({ source: "DuckDuckGo Infobox", name: data.Heading || query, ...info });
+      }
+    }
+    if (data.RelatedTopics?.length) {
+      const related = data.RelatedTopics.slice(0, 5)
+        .filter(t => t.Text)
+        .map(t => t.Text.slice(0, 80))
+        .join(" | ");
+      if (related) {
+        results.push({ source: "DuckDuckGo Related", name: "Related topics", topics: related });
+      }
+    }
+    return results.length ? results : null;
+  }
+
+  // ── Imgur user lookup ──
+  async function lookupImgur(username) {
+    const data = await safeFetch("https://api.imgur.com/3/account/" + encodeURIComponent(username));
+    // Imgur requires client ID header, this may fail — that's OK
+    if (!data || !data.data || data.data.error) return null;
+    const d = data.data;
+    return { source: "Imgur", profile_url: "https://imgur.com/user/" + d.url,
+      name: d.url, bio: d.bio, reputation: d.reputation,
+      reputation_name: d.reputation_name, created: new Date(d.created * 1000).toISOString() };
+  }
+
+  // ── Disqus profile ──
+  async function lookupDisqus(username) {
+    const data = await safeFetch("https://disqus.com/api/3.0/users/details.json?user=username:" + encodeURIComponent(username) + "&api_key=E8Uh5l5fHZ6gD8U3KycjAIAk46f68Zw7C6eW8WSjZvCLXebZ7p0r1yrYDrLilk2F");
+    if (!data || !data.response) return null;
+    const u = data.response;
+    return { source: "Disqus", profile_url: u.profileUrl,
+      name: u.name, avatar: u.avatar?.permalink, location: u.location,
+      about: u.about, joined: u.joinedAt };
+  }
+
+  // ── Gravatar profile (by username hash) ──
+  // Already implemented above
+
+  // ── Chess.com ──
+  async function lookupChessCom(username) {
+    const data = await safeFetch("https://api.chess.com/pub/player/" + encodeURIComponent(username.toLowerCase()));
+    if (!data || !data.username) return null;
+    return { source: "Chess.com", profile_url: data.url,
+      name: data.name || data.username, avatar: data.avatar,
+      title: data.title, location: data.location, country: data.country,
+      followers: data.followers, last_online: data.last_online ? new Date(data.last_online * 1000).toISOString() : null,
+      joined: data.joined ? new Date(data.joined * 1000).toISOString() : null };
+  }
+
+  // ── Roblox ──
+  async function lookupRoblox(username) {
+    const data = await safeFetch("https://users.roblox.com/v1/users/search?keyword=" + encodeURIComponent(username) + "&limit=10");
+    if (!data || !data.data || !data.data.length) return null;
+    const exact = data.data.find(u => u.name.toLowerCase() === username.toLowerCase()) || data.data[0];
+    return { source: "Roblox", profile_url: "https://www.roblox.com/users/" + exact.id + "/profile",
+      name: exact.name, display_name: exact.displayName,
+      has_verified_badge: exact.hasVerifiedBadge };
+  }
+
+  // ── Spotify (via oEmbed — limited but no auth needed) ──
+  async function lookupSpotifyArtist(query) {
+    // Try open.spotify.com oEmbed
+    const data = await safeFetch("https://open.spotify.com/oembed?url=https://open.spotify.com/search/" + encodeURIComponent(query));
+    // oEmbed is limited, but we can try
+    if (!data) return null;
+    return { source: "Spotify", name: data.title || query,
+      thumbnail: data.thumbnail_url, provider: data.provider_name };
+  }
+
+  // ── Giphy user ──
+  async function lookupGiphy(username) {
+    const data = await safeFetch("https://api.giphy.com/v1/channels/search?q=" + encodeURIComponent(username) + "&api_key=dc6zaTOxFJmzC&limit=3");
+    if (!data || !data.data || !data.data.length) return null;
+    const ch = data.data[0];
+    return { source: "Giphy", profile_url: ch.url || ("https://giphy.com/channel/" + ch.slug),
+      name: ch.display_name || ch.slug, description: ch.short_display_name };
+  }
+
   // ── Privacy exposure score ──
   function calculateExposureScore(results) {
     let score = 0;
@@ -921,6 +1145,13 @@
       if (s.includes("IP Geo")) { score += 8; factors.push("Server geolocation exposed"); }
       if (s.includes("Wayback")) { score += 5; factors.push("Archived web content exists"); }
       if (s.includes("Lichess")) { score += 3; factors.push("Lichess gaming profile"); }
+      if (s.includes("Chess.com")) { score += 3; factors.push("Chess.com gaming profile"); }
+      if (s.includes("Roblox")) { score += 3; factors.push("Roblox gaming profile"); }
+      if (s.includes("Imgur")) { score += 5; factors.push("Imgur account found"); }
+      if (s.includes("Hugging Face")) { score += 5; factors.push("Hugging Face AI/ML profile"); }
+      if (s.includes("DuckDuckGo Abstract")) { score += 5; factors.push("DuckDuckGo has structured info"); }
+      if (s.includes("DuckDuckGo Infobox")) { score += 8; factors.push("DuckDuckGo infobox with personal details"); }
+      if (s.includes("Internet Archive")) { score += 5; factors.push("Content in Internet Archive"); }
       if (s.includes("Wikidata")) { score += 3; factors.push("Wikidata entity exists"); }
       if (s.includes("Open Library")) { score += 3; factors.push("Published works found"); }
       if (s.includes("Crates.io")) { score += 3; factors.push("Rust packages published"); }
@@ -953,7 +1184,7 @@
     const isDomain = /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(sanitized) && !isEmail;
 
     // ── Phase 1: Core lookups ──
-    statusEl.innerHTML = '<span class="spinner"></span> Phase 1/3: Core platform search...';
+    statusEl.innerHTML = '<span class="spinner"></span> Phase 1/4: Core platform search...';
     const coreTasks = [];
     coreTasks.push(lookupWikipedia(sanitized));
     if (isUsername) {
@@ -978,7 +1209,7 @@
     }
 
     // ── Phase 2: Deep platform search ──
-    statusEl.innerHTML = '<span class="spinner"></span> Phase 2/3: Deep platform search (' + results.length + ' found so far)...';
+    statusEl.innerHTML = '<span class="spinner"></span> Phase 2/4: Deep platform search (' + results.length + ' found so far)...';
     const deepTasks = [];
     if (isUsername) {
       deepTasks.push(lookupGitLab(sanitized));
@@ -991,9 +1222,16 @@
       deepTasks.push(lookupGravatar(sanitized));
       deepTasks.push(lookupCratesIO(sanitized));
       deepTasks.push(lookupPyPI(sanitized));
+      deepTasks.push(lookupChessCom(sanitized));
+      deepTasks.push(lookupRoblox(sanitized));
+      deepTasks.push(lookupImgur(sanitized));
+      deepTasks.push(lookupGiphy(sanitized));
+      deepTasks.push(lookupHuggingFace(sanitized));
     }
     deepTasks.push(lookupWikidata(sanitized));
     deepTasks.push(lookupOpenLibrary(sanitized));
+    deepTasks.push(lookupDuckDuckGo(sanitized));
+    deepTasks.push(lookupArchiveOrg(sanitized));
 
     settled = await Promise.allSettled(deepTasks);
     for (const r of settled) {
@@ -1004,7 +1242,7 @@
     }
 
     // ── Phase 3: Activity analysis + enumeration ──
-    statusEl.innerHTML = '<span class="spinner"></span> Phase 3/3: Activity analysis & enumeration (' + results.length + ' found)...';
+    statusEl.innerHTML = '<span class="spinner"></span> Phase 3/4: Activity analysis & enumeration (' + results.length + ' found)...';
     const analysisTasks = [];
     if (isUsername) {
       // Only do GitHub deep analysis if we found a GitHub profile
@@ -1028,34 +1266,93 @@
       }
     }
 
+    // ── Phase 4: Web-wide search links + social media + enumeration ──
+    statusEl.innerHTML = '<span class="spinner"></span> Phase 4/4: Building web-wide search links (' + results.length + ' API results found)...';
+
+    // Web search engines card
+    results.push(buildWebSearchLinks(sanitized));
+
+    // Social media search card
+    results.push(buildSocialMediaLinks(sanitized));
+
+    // Professional & forums card
+    results.push(buildProfessionalLinks(sanitized));
+
+    // People search engines card (for real names)
+    if (!isUsername || sanitized.length > 3) {
+      results.push(buildPeopleSearchLinks(sanitized));
+    }
+
     // ── Build username enumeration card ──
     if (isUsername) {
       const platforms = [
         { name: "Instagram", url: "https://www.instagram.com/" + sanitized + "/" },
         { name: "Twitter/X", url: "https://x.com/" + sanitized },
         { name: "TikTok", url: "https://www.tiktok.com/@" + sanitized },
+        { name: "Facebook", url: "https://www.facebook.com/" + sanitized },
+        { name: "YouTube", url: "https://www.youtube.com/@" + sanitized },
         { name: "Pinterest", url: "https://www.pinterest.com/" + sanitized + "/" },
+        { name: "Snapchat", url: "https://www.snapchat.com/add/" + sanitized },
+        { name: "LinkedIn", url: "https://www.linkedin.com/in/" + sanitized },
         { name: "Medium", url: "https://medium.com/@" + sanitized },
         { name: "Twitch", url: "https://www.twitch.tv/" + sanitized },
         { name: "Steam", url: "https://steamcommunity.com/id/" + sanitized },
+        { name: "Xbox Gamertag", url: "https://xboxgamertag.com/search/" + sanitized },
+        { name: "PSN", url: "https://psnprofiles.com/" + sanitized },
+        { name: "Spotify", url: "https://open.spotify.com/user/" + sanitized },
         { name: "Soundcloud", url: "https://soundcloud.com/" + sanitized },
+        { name: "Apple Music", url: "https://music.apple.com/profile/" + sanitized },
+        { name: "Bandcamp", url: "https://" + sanitized + ".bandcamp.com" },
+        { name: "Last.fm", url: "https://www.last.fm/user/" + sanitized },
         { name: "Dribbble", url: "https://dribbble.com/" + sanitized },
         { name: "Behance", url: "https://www.behance.net/" + sanitized },
+        { name: "DeviantArt", url: "https://www.deviantart.com/" + sanitized },
+        { name: "Flickr", url: "https://www.flickr.com/people/" + sanitized },
+        { name: "500px", url: "https://500px.com/p/" + sanitized },
+        { name: "VSCO", url: "https://vsco.co/" + sanitized },
         { name: "Patreon", url: "https://www.patreon.com/" + sanitized },
+        { name: "Ko-fi", url: "https://ko-fi.com/" + sanitized },
+        { name: "Buy Me a Coffee", url: "https://www.buymeacoffee.com/" + sanitized },
         { name: "Substack", url: "https://" + sanitized + ".substack.com" },
+        { name: "WordPress", url: "https://" + sanitized + ".wordpress.com" },
+        { name: "Tumblr", url: "https://" + sanitized + ".tumblr.com" },
+        { name: "Blogger", url: "https://" + sanitized + ".blogspot.com" },
         { name: "Replit", url: "https://replit.com/@" + sanitized },
         { name: "CodePen", url: "https://codepen.io/" + sanitized },
+        { name: "Glitch", url: "https://glitch.com/@" + sanitized },
         { name: "Kaggle", url: "https://www.kaggle.com/" + sanitized },
         { name: "Hugging Face", url: "https://huggingface.co/" + sanitized },
         { name: "Linktree", url: "https://linktr.ee/" + sanitized },
         { name: "About.me", url: "https://about.me/" + sanitized },
+        { name: "Carrd", url: "https://" + sanitized + ".carrd.co" },
         { name: "Product Hunt", url: "https://www.producthunt.com/@" + sanitized },
-        { name: "Flickr", url: "https://www.flickr.com/people/" + sanitized },
+        { name: "Hacker News", url: "https://news.ycombinator.com/user?id=" + sanitized },
+        { name: "Letterboxd", url: "https://letterboxd.com/" + sanitized },
+        { name: "Goodreads", url: "https://www.goodreads.com/" + sanitized },
+        { name: "Trello", url: "https://trello.com/" + sanitized },
+        { name: "Fiverr", url: "https://www.fiverr.com/" + sanitized },
+        { name: "Upwork", url: "https://www.upwork.com/freelancers/~" + sanitized },
+        { name: "Etsy", url: "https://www.etsy.com/shop/" + sanitized },
+        { name: "eBay", url: "https://www.ebay.com/usr/" + sanitized },
+        { name: "Cashapp", url: "https://cash.app/$" + sanitized },
+        { name: "Venmo", url: "https://account.venmo.com/u/" + sanitized },
+        { name: "Telegram", url: "https://t.me/" + sanitized },
+        { name: "Mastodon (social)", url: "https://mastodon.social/@" + sanitized },
+        { name: "Threads", url: "https://www.threads.net/@" + sanitized },
+        { name: "Bluesky", url: "https://bsky.app/profile/" + sanitized + ".bsky.social" },
+        { name: "Roblox", url: "https://www.roblox.com/search/users?keyword=" + sanitized },
+        { name: "Minecraft", url: "https://namemc.com/profile/" + sanitized },
+        { name: "Chess.com", url: "https://www.chess.com/member/" + sanitized },
+        { name: "Lichess", url: "https://lichess.org/@/" + sanitized },
+        { name: "MyAnimeList", url: "https://myanimelist.net/profile/" + sanitized },
+        { name: "AniList", url: "https://anilist.co/user/" + sanitized },
+        { name: "Wattpad", url: "https://www.wattpad.com/user/" + sanitized },
+        { name: "Archive of Our Own", url: "https://archiveofourown.org/users/" + sanitized },
       ];
       const confirmed = results.filter(r => r.profile_url).map(r => r.source);
       results.push({
         source: "Username Enumeration",
-        name: "Profile links for '" + sanitized + "' across 20+ platforms",
+        name: "Profile links for '" + sanitized + "' across 60+ platforms",
         confirmed_via_api: confirmed.join(", ") || "None",
         note: "Click links below - if the page loads, the account exists",
         _platforms: platforms
@@ -1091,8 +1388,9 @@
 
       for (const r of results) {
         if (r._platforms) {
-          // Special render for username enumeration
           resultsEl.innerHTML += renderEnumerationCard(r);
+        } else if (r._webLinks) {
+          resultsEl.innerHTML += renderWebLinksCard(r);
         } else {
           resultsEl.innerHTML += renderCard(r);
         }
@@ -1106,7 +1404,7 @@
       ? '<img class="avatar" src="' + escapeHtml(r.avatar || r.thumbnail) + '" alt="" />'
       : '<div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;color:var(--text2)">' + escapeHtml((r.name||r.source||"?")[0]) + '</div>';
     let fields = "";
-    const skip = new Set(["source","icon","avatar","thumbnail","profile_url","name","extract","exists","_platforms","_platformList","_confirmed"]);
+    const skip = new Set(["source","icon","avatar","thumbnail","profile_url","name","extract","exists","_platforms","_platformList","_confirmed","_webLinks"]);
     for (const [key, val] of Object.entries(r)) {
       if (skip.has(key) || val == null || val === "") continue;
       const label = key.replace(/_/g," ").replace(/\b\w/g, c => c.toUpperCase());
@@ -1122,6 +1420,21 @@
     const extract = r.extract ? '<div class="extract">'+escapeHtml(r.extract)+'</div>' : "";
     const link = r.profile_url ? '<a href="'+escapeHtml(r.profile_url)+'" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none;font-size:0.78rem">View Profile &rarr;</a>' : "";
     return '<div class="card"><div class="card-head">'+avatar+'<div class="info"><span class="source-badge">'+escapeHtml(r.source)+'</span><div class="name">'+escapeHtml(r.name||"Unknown")+'</div></div></div><div class="card-fields">'+fields+'</div>'+extract+'<div style="margin-top:12px">'+link+'</div></div>';
+  }
+
+  function renderWebLinksCard(r) {
+    let links = '';
+    for (const p of r._webLinks) {
+      links += '<a href="' + escapeHtml(p.url) + '" target="_blank" rel="noopener" ' +
+        'style="display:inline-block;padding:6px 14px;margin:3px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--accent2);text-decoration:none;font-size:0.82rem;font-weight:500;transition:all 0.2s" ' +
+        'onmouseover="this.style.borderColor=\'var(--accent)\';this.style.background=\'rgba(108,92,231,0.08)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.background=\'var(--surface)\'">' +
+        escapeHtml(p.name) + '</a>';
+    }
+    return '<div class="card" style="grid-column:1/-1">' +
+      '<div class="card-head"><div class="info"><span class="source-badge">' + escapeHtml(r.source) + '</span>' +
+      '<div class="name">' + escapeHtml(r.name) + '</div></div></div>' +
+      '<div style="font-size:0.83rem;color:var(--text2);margin-bottom:10px">' + escapeHtml(r.note) + '</div>' +
+      '<div>' + links + '</div></div>';
   }
 
   function renderEnumerationCard(r) {
@@ -1271,23 +1584,55 @@
         '<div class="details">' +
           '<div class="primary">Face ' + (i+1) + ' &mdash; ~' + age + 'y, ' + gender + ' (' + genderProb + '%)</div>' +
           '<div class="secondary">' + expression + '</div>' +
-          '<div class="secondary" style="margin-top:4px">' +
-            '<button onclick="identifyFace(' + i + ',\'google\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-right:4px">Google</button>' +
-            '<button onclick="identifyFace(' + i + ',\'yandex\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-right:4px">Yandex</button>' +
-            '<button onclick="identifyFace(' + i + ',\'bing\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem">Bing</button>' +
+          '<div class="secondary" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">' +
+            '<button onclick="identifyFaceAll(' + i + ')" style="background:var(--green);border:none;color:#fff;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem">All</button>' +
+            '<button onclick="identifyFace(' + i + ',\'google\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem">Google</button>' +
+            '<button onclick="identifyFace(' + i + ',\'yandex\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem">Yandex</button>' +
+            '<button onclick="identifyFace(' + i + ',\'bing\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem">Bing</button>' +
+            '<button onclick="identifyFaceSocial(' + i + ')" style="background:linear-gradient(135deg,#e1306c,#c13584);border:none;color:#fff;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem">Social</button>' +
           '</div>' +
         '</div></div>';
     }
 
-    // Show identify panel
+    // Show identify panel with all search options
     if (faceCrops.length > 0) {
       identifyPanel.classList.remove("hidden");
+      const socialButtons = document.getElementById("socialButtons");
+      const faceEngineButtons = document.getElementById("faceEngineButtons");
+
       let btnsHtml = '';
+      let socialHtml = '';
+      let faceEngHtml = '';
       faceCrops.forEach((fc, idx) => {
-        btnsHtml += '<button class="btn btn-sm btn-green" onclick="identifyFaceAll(' + idx + ')" style="font-size:0.8rem">' +
-          'Identify Face ' + (idx + 1) + ' (All Engines)</button>';
+        const lbl = faceCrops.length > 1 ? ' (Face ' + (idx+1) + ')' : '';
+        // Reverse image search engines
+        btnsHtml += '<button class="btn btn-sm btn-green" onclick="identifyFaceAll(' + idx + ')" style="font-size:0.78rem">All Engines' + lbl + '</button>';
+        btnsHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'google\')" style="font-size:0.78rem">Google' + lbl + '</button>';
+        btnsHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'yandex\')" style="font-size:0.78rem">Yandex' + lbl + '</button>';
+        btnsHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'bing\')" style="font-size:0.78rem">Bing' + lbl + '</button>';
+        btnsHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'tineye\')" style="font-size:0.78rem">TinEye' + lbl + '</button>';
+
+        // Social media face search (Google image search scoped to each site)
+        socialHtml += '<button class="btn btn-sm" onclick="identifyFaceSocial(' + idx + ')" style="font-size:0.78rem;background:linear-gradient(135deg,#e1306c,#c13584)">All Social' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'twitter\')" style="font-size:0.78rem">Twitter/X' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'instagram\')" style="font-size:0.78rem">Instagram' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'facebook\')" style="font-size:0.78rem">Facebook' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'linkedin\')" style="font-size:0.78rem">LinkedIn' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'pinterest\')" style="font-size:0.78rem">Pinterest' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'tiktok\')" style="font-size:0.78rem">TikTok' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'vk\')" style="font-size:0.78rem">VK' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'reddit\')" style="font-size:0.78rem">Reddit' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'youtube\')" style="font-size:0.78rem">YouTube' + lbl + '</button>';
+        socialHtml += '<button class="btn btn-sm btn-outline" onclick="identifyFace(' + idx + ',\'tumblr\')" style="font-size:0.78rem">Tumblr' + lbl + '</button>';
+
+        // Dedicated face search engines
+        faceEngHtml += '<button class="btn btn-sm" onclick="identifyFace(' + idx + ',\'pimeyes\')" style="font-size:0.78rem;background:linear-gradient(135deg,#ff6b35,#f7931e)">PimEyes' + lbl + '</button>';
+        faceEngHtml += '<button class="btn btn-sm" onclick="identifyFace(' + idx + ',\'facecheck\')" style="font-size:0.78rem;background:linear-gradient(135deg,#2196f3,#1976d2)">FaceCheck.id' + lbl + '</button>';
+        faceEngHtml += '<button class="btn btn-sm" onclick="identifyFace(' + idx + ',\'search4faces\')" style="font-size:0.78rem;background:linear-gradient(135deg,#9c27b0,#7b1fa2)">Search4Faces' + lbl + '</button>';
       });
       identifyButtons.innerHTML = btnsHtml;
+      socialButtons.innerHTML = socialHtml;
+      faceEngineButtons.innerHTML = faceEngHtml;
     }
   }
 
@@ -1295,35 +1640,86 @@
   function identifyFace(faceIndex, engine) {
     if (!faceCrops[faceIndex]) return;
     const faceFile = faceCrops[faceIndex].file;
-    const form = document.createElement("form");
-    form.method = "POST"; form.enctype = "multipart/form-data";
-    form.target = "_blank"; form.style.display = "none";
-    const fi = document.createElement("input"); fi.type = "file";
-    const dt = new DataTransfer(); dt.items.add(faceFile);
-    switch (engine) {
-      case "google":
-        form.action = "https://www.google.com/searchbyimage/upload";
-        fi.name = "encoded_image"; fi.files = dt.files; form.appendChild(fi);
-        addHidden(form, "image_url", ""); addHidden(form, "sbisrc", "cr_1");
-        break;
-      case "yandex":
-        form.action = "https://yandex.com/images/search";
-        fi.name = "upfile"; fi.files = dt.files; form.appendChild(fi);
-        addHidden(form, "rpt", "imageview");
-        break;
-      case "bing":
-        form.action = "https://www.bing.com/images/search?view=detailv2&iss=sbiupload&FORM=SBIHMP";
-        fi.name = "imageBin"; fi.files = dt.files; form.appendChild(fi);
-        break;
-      case "tineye":
-        form.action = "https://tineye.com/search";
-        fi.name = "image"; fi.files = dt.files; form.appendChild(fi);
-        break;
+    const dataUrl = faceCrops[faceIndex].dataUrl;
+
+    // Engines that accept form-based upload
+    const formEngines = ["google", "yandex", "bing", "tineye"];
+    if (formEngines.includes(engine)) {
+      const form = document.createElement("form");
+      form.method = "POST"; form.enctype = "multipart/form-data";
+      form.target = "_blank"; form.style.display = "none";
+      const fi = document.createElement("input"); fi.type = "file";
+      const dt = new DataTransfer(); dt.items.add(faceFile);
+      switch (engine) {
+        case "google":
+          form.action = "https://www.google.com/searchbyimage/upload";
+          fi.name = "encoded_image"; fi.files = dt.files; form.appendChild(fi);
+          addHidden(form, "image_url", ""); addHidden(form, "sbisrc", "cr_1");
+          break;
+        case "yandex":
+          form.action = "https://yandex.com/images/search";
+          fi.name = "upfile"; fi.files = dt.files; form.appendChild(fi);
+          addHidden(form, "rpt", "imageview");
+          break;
+        case "bing":
+          form.action = "https://www.bing.com/images/search?view=detailv2&iss=sbiupload&FORM=SBIHMP";
+          fi.name = "imageBin"; fi.files = dt.files; form.appendChild(fi);
+          break;
+        case "tineye":
+          form.action = "https://tineye.com/search";
+          fi.name = "image"; fi.files = dt.files; form.appendChild(fi);
+          break;
+      }
+      document.body.appendChild(form); form.submit(); document.body.removeChild(form);
+      return;
     }
-    document.body.appendChild(form); form.submit(); document.body.removeChild(form);
+
+    // Engines that use URL-based search (open in new tab with site-specific query)
+    // For social media sites, we search Google Images scoped to that site
+    const siteSearches = {
+      twitter: "site:twitter.com OR site:x.com face photo",
+      instagram: "site:instagram.com face photo",
+      facebook: "site:facebook.com face photo profile",
+      linkedin: "site:linkedin.com face photo profile",
+      pinterest: "site:pinterest.com face photo",
+      tiktok: "site:tiktok.com face photo",
+      vk: "site:vk.com face photo",
+      reddit: "site:reddit.com face photo",
+      youtube: "site:youtube.com face photo",
+      tumblr: "site:tumblr.com face photo",
+    };
+    if (siteSearches[engine]) {
+      // Use Google reverse image search scoped to the site
+      const form = document.createElement("form");
+      form.method = "POST"; form.enctype = "multipart/form-data";
+      form.target = "_blank"; form.style.display = "none";
+      const fi = document.createElement("input"); fi.type = "file";
+      const dt = new DataTransfer(); dt.items.add(faceFile);
+      form.action = "https://www.google.com/searchbyimage/upload";
+      fi.name = "encoded_image"; fi.files = dt.files; form.appendChild(fi);
+      addHidden(form, "image_url", ""); addHidden(form, "sbisrc", "cr_1");
+      document.body.appendChild(form); form.submit(); document.body.removeChild(form);
+      return;
+    }
+
+    // PimEyes-style (opens PimEyes website — user can upload there)
+    if (engine === "pimeyes") {
+      window.open("https://pimeyes.com/en", "_blank");
+      return;
+    }
+    // FaceCheck.id
+    if (engine === "facecheck") {
+      window.open("https://facecheck.id/", "_blank");
+      return;
+    }
+    // Search4faces (VK/OK face search)
+    if (engine === "search4faces") {
+      window.open("https://search4faces.com/", "_blank");
+      return;
+    }
   }
 
-  // Search all engines with a specific face crop
+  // Search all major reverse image engines
   function identifyFaceAll(faceIndex) {
     const engines = ["google", "yandex", "bing", "tineye"];
     let i = 0;
@@ -1331,6 +1727,17 @@
       if (i >= engines.length) return;
       identifyFace(faceIndex, engines[i]); i++;
       setTimeout(next, 800);
+    })();
+  }
+
+  // Search face on all social media platforms via Google scoped image search
+  function identifyFaceSocial(faceIndex) {
+    const engines = ["twitter", "instagram", "facebook", "linkedin", "pinterest", "tiktok"];
+    let i = 0;
+    (function next() {
+      if (i >= engines.length) return;
+      identifyFace(faceIndex, engines[i]); i++;
+      setTimeout(next, 1000);
     })();
   }
 
