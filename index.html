@@ -404,14 +404,26 @@
     </div>
   </div>
 
-  <!-- ── face-api.js ─────────────────────────────── -->
-  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <!-- ── face-api.js from CDN (with fallback) ──── -->
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.js"></script>
+  <script>
+    // Fallback: if vladmandic build failed, try original
+    if (typeof faceapi === "undefined") {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"><\/script>');
+    }
+  </script>
 
   <script>
   // ═══════════════════════════════════════════════════
   //  GLOBALS
   // ═══════════════════════════════════════════════════
-  const MODEL_URL = "https://justadudewhohacks.github.io/face-api.js/weights";
+  // Multiple CDN URLs to try — the GitHub Pages one is often down
+  const MODEL_URLS = [
+    "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model",
+    "https://cdn.jsdelivr.net/gh/nicedoc/face-api.js-models@main",
+    "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights",
+    "https://justadudewhohacks.github.io/face-api.js/weights",
+  ];
   let modelsLoaded = false;
   let uploadedFile = null;
   let compareFile1 = null, compareFile2 = null;
@@ -433,25 +445,54 @@
   }
 
   // ═══════════════════════════════════════════════════
-  //  LOAD FACE-API MODELS
+  //  LOAD FACE-API MODELS (with fallback chain)
   // ═══════════════════════════════════════════════════
+  function setModelStatus(html) {
+    const el1 = document.getElementById("imgModelStatus");
+    const el2 = document.getElementById("compareModelStatus");
+    if (el1) el1.innerHTML = html;
+    if (el2) el2.innerHTML = html;
+  }
+
+  async function tryLoadModels(url) {
+    await Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri(url),
+      faceapi.nets.faceLandmark68Net.loadFromUri(url),
+      faceapi.nets.faceRecognitionNet.loadFromUri(url),
+      faceapi.nets.ageGenderNet.loadFromUri(url),
+      faceapi.nets.faceExpressionNet.loadFromUri(url),
+    ]);
+  }
+
   async function loadModels() {
-    try {
-      await Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-        faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL),
-        faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
-      ]);
-      modelsLoaded = true;
-      document.getElementById("imgModelStatus").innerHTML = '<span class="loaded">Face detection models loaded.</span>';
-      document.getElementById("compareModelStatus").innerHTML = '<span class="loaded">Face detection models loaded.</span>';
-    } catch (err) {
-      const msg = "Failed to load models: " + err.message;
-      document.getElementById("imgModelStatus").textContent = msg;
-      document.getElementById("compareModelStatus").textContent = msg;
+    if (typeof faceapi === "undefined") {
+      setModelStatus('<span style="color:var(--danger)">face-api.js library failed to load. Check your internet connection.</span>');
+      return;
     }
+
+    for (let i = 0; i < MODEL_URLS.length; i++) {
+      const url = MODEL_URLS[i];
+      const cdnName = url.includes("vladmandic") ? "vladmandic CDN" :
+                       url.includes("nicedoc") ? "nicedoc CDN" :
+                       url.includes("jsdelivr") ? "jsdelivr CDN" : "GitHub Pages";
+      setModelStatus('<span class="spinner"></span> Loading face models from ' + cdnName + '... (source ' + (i+1) + '/' + MODEL_URLS.length + ')');
+      try {
+        await tryLoadModels(url);
+        modelsLoaded = true;
+        setModelStatus('<span class="loaded">Face detection models loaded from ' + cdnName + '.</span>');
+        return;
+      } catch (err) {
+        console.warn("Model load failed from " + url + ":", err.message);
+        if (i < MODEL_URLS.length - 1) continue;
+      }
+    }
+
+    // All failed
+    setModelStatus(
+      '<span style="color:var(--danger)">Failed to load face models from all sources.</span> ' +
+      '<button class="btn btn-sm" style="margin-left:8px;padding:6px 14px;font-size:0.78rem" onclick="loadModels()">Retry</button>' +
+      '<br><span style="font-size:0.75rem;color:var(--text2);margin-top:4px;display:inline-block">Make sure you\'re connected to the internet. If opening index.html directly, try using a local server (npm start) instead.</span>'
+    );
   }
   loadModels();
 
@@ -818,63 +859,6 @@
     return { source: "Wayback Machine", profile_url: snap.url,
       name: "Internet Archive Snapshot", snapshot_date: snap.timestamp,
       available: snap.available, status: snap.status };
-  }
-
-  // ── Username enumeration across many platforms ──
-  async function checkUsername(username) {
-    const platforms = [
-      { name: "Instagram", url: "https://www.instagram.com/" + username + "/", check: "profilePage" },
-      { name: "Twitter/X", url: "https://x.com/" + username, check: "status" },
-      { name: "TikTok", url: "https://www.tiktok.com/@" + username, check: "status" },
-      { name: "Pinterest", url: "https://www.pinterest.com/" + username + "/", check: "status" },
-      { name: "Medium", url: "https://medium.com/@" + username, check: "status" },
-      { name: "Twitch", url: "https://www.twitch.tv/" + username, check: "status" },
-      { name: "Steam", url: "https://steamcommunity.com/id/" + username, check: "status" },
-      { name: "Soundcloud", url: "https://soundcloud.com/" + username, check: "status" },
-      { name: "Flickr", url: "https://www.flickr.com/people/" + username, check: "status" },
-      { name: "Dribbble", url: "https://dribbble.com/" + username, check: "status" },
-      { name: "Behance", url: "https://www.behance.net/" + username, check: "status" },
-      { name: "About.me", url: "https://about.me/" + username, check: "status" },
-      { name: "Patreon", url: "https://www.patreon.com/" + username, check: "status" },
-      { name: "Substack", url: "https://" + username + ".substack.com", check: "status" },
-      { name: "Replit", url: "https://replit.com/@" + username, check: "status" },
-      { name: "CodePen", url: "https://codepen.io/" + username, check: "status" },
-      { name: "Kaggle", url: "https://www.kaggle.com/" + username, check: "status" },
-      { name: "Hugging Face", url: "https://huggingface.co/" + username, check: "status" },
-      { name: "Product Hunt", url: "https://www.producthunt.com/@" + username, check: "status" },
-      { name: "Linktree", url: "https://linktr.ee/" + username, check: "status" },
-    ];
-
-    // We can't actually check most due to CORS, so we generate smart profile links
-    // and check the ones that DO support CORS
-    const corsCheckable = [];
-
-    // Check DEV.to (has CORS API)
-    const devto = await lookupDevTo(username);
-    if (devto) corsCheckable.push({ name: "DEV.to", url: "https://dev.to/" + username, found: true });
-
-    // Check GitLab (has CORS API)
-    const gitlab = await lookupGitLab(username);
-    if (gitlab) corsCheckable.push({ name: "GitLab", url: gitlab.profile_url, found: true });
-
-    // Check Keybase (has CORS API)
-    const keybase = await lookupKeybase(username);
-    if (keybase) corsCheckable.push({ name: "Keybase", url: "https://keybase.io/" + username, found: true });
-
-    // Check Lichess (has CORS API)
-    const lichess = await lookupLichess(username);
-    if (lichess) corsCheckable.push({ name: "Lichess", url: "https://lichess.org/@/" + username, found: true });
-
-    const confirmedLinks = corsCheckable.filter(c => c.found).map(c => c.name + ": " + c.url);
-    const possibleLinks = platforms.map(p => p.name + ": " + p.url);
-
-    return {
-      source: "Username Enumeration", name: "Potential Profiles for '" + username + "'",
-      confirmed_profiles: confirmedLinks.join("\n") || "None confirmed via API",
-      possible_profiles_count: platforms.length + " platforms checked",
-      note: "Links below go directly to profile pages. If they load, the account exists.",
-      _platformList: platforms, _confirmed: corsCheckable
-    };
   }
 
   // ── Privacy exposure score ──
@@ -1267,7 +1251,14 @@
         html += '<span class="elabel">Megapixels</span><span class="evalue">' + ((tempImg.naturalWidth * tempImg.naturalHeight) / 1e6).toFixed(1) + ' MP</span>';
         if (exif) {
           for (const [k, v] of Object.entries(exif)) {
-            html += '<span class="elabel">' + escapeHtml(k) + '</span><span class="evalue">' + escapeHtml(String(v)) + '</span>';
+            if (k === "GPS Map Link") {
+              html += '<span class="elabel">' + escapeHtml(k) + '</span><span class="evalue"><a href="' + escapeHtml(String(v)) + '" target="_blank" rel="noopener" style="color:var(--accent2)">Open in Google Maps</a></span>';
+            } else {
+              html += '<span class="elabel">' + escapeHtml(k) + '</span><span class="evalue">' + escapeHtml(String(v)) + '</span>';
+            }
+          }
+          if (exif["GPS Coordinates"]) {
+            html += '<span class="elabel" style="grid-column:1/-1;color:var(--orange);margin-top:6px">This image contains GPS location data — a major privacy risk!</span>';
           }
         }
         exifDiv.innerHTML = html;
@@ -1289,17 +1280,30 @@
           const tiffOffset = offset + 10;
           const littleEndian = view.getUint16(tiffOffset) === 0x4949;
           const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
-          const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
           const result = {};
           const tagNames = {
             0x010F:"Camera Make",0x0110:"Camera Model",0x0112:"Orientation",
             0x0131:"Software",0x0132:"Date/Time",0x013B:"Artist",0x8298:"Copyright",
-            0x8769:"ExifIFD",0x9003:"Date Original",0x9004:"Date Digitized",
+            0x8769:"ExifIFD",0x8825:"GPSIFD",
+            0x9003:"Date Original",0x9004:"Date Digitized",
             0x920A:"Focal Length",0xA405:"Focal Length (35mm)",0x829A:"Exposure Time",
             0x829D:"F-Number",0x8827:"ISO Speed",0x9209:"Flash",
             0xA002:"Image Width",0xA003:"Image Height"
           };
-          function readIFD(ifdStart, max) {
+          // GPS tag names
+          const gpsTagNames = {
+            0x0001:"GPSLatitudeRef",0x0002:"GPSLatitude",0x0003:"GPSLongitudeRef",
+            0x0004:"GPSLongitude",0x0005:"GPSAltitudeRef",0x0006:"GPSAltitude",
+            0x001D:"GPSDateStamp"
+          };
+
+          function readRational(off) {
+            const num = view.getUint32(off, littleEndian);
+            const den = view.getUint32(off + 4, littleEndian);
+            return den === 0 ? 0 : num / den;
+          }
+
+          function readIFD(ifdStart, max, tags) {
             const n = view.getUint16(tiffOffset + ifdStart, littleEndian);
             for (let i = 0; i < Math.min(n, max); i++) {
               const eo = tiffOffset + ifdStart + 2 + i * 12;
@@ -1308,14 +1312,35 @@
               const type = view.getUint16(eo + 2, littleEndian);
               const count = view.getUint32(eo + 4, littleEndian);
               const vo = eo + 8;
-              const name = tagNames[tag];
-              if (!name || name === "ExifIFD") {
-                if (tag === 0x8769 && (type === 3 || type === 4)) {
+              const name = tags[tag];
+
+              // Follow sub-IFD pointers (ExifIFD, GPSIFD)
+              if (!name || name === "ExifIFD" || name === "GPSIFD") {
+                if ((tag === 0x8769 || tag === 0x8825) && (type === 3 || type === 4)) {
                   const sub = type === 3 ? view.getUint16(vo, littleEndian) : view.getUint32(vo, littleEndian);
-                  try { readIFD(sub, 50); } catch {}
+                  const subTags = tag === 0x8825 ? gpsTagNames : tags;
+                  try { readIFD(sub, 50, subTags); } catch {}
                 }
                 continue;
               }
+
+              // RATIONAL (type 5) — used for GPS coords, focal length, etc.
+              if (type === 5 && count >= 1) {
+                const dataOff = tiffOffset + view.getUint32(vo, littleEndian);
+                if (dataOff + count * 8 <= view.byteLength) {
+                  if (count === 3 && (name === "GPSLatitude" || name === "GPSLongitude")) {
+                    // DMS format: degrees, minutes, seconds
+                    const deg = readRational(dataOff);
+                    const min = readRational(dataOff + 8);
+                    const sec = readRational(dataOff + 16);
+                    result[name] = [deg, min, sec];
+                  } else {
+                    result[name] = readRational(dataOff);
+                  }
+                }
+                continue;
+              }
+
               if (type === 2 && count > 0) {
                 let so = count <= 4 ? vo : tiffOffset + view.getUint32(vo, littleEndian);
                 if (so + count <= view.byteLength) {
@@ -1327,7 +1352,31 @@
               else if (type === 4) result[name] = view.getUint32(vo, littleEndian);
             }
           }
-          readIFD(ifdOffset, 50);
+          readIFD(ifdOffset, 50, tagNames);
+
+          // Convert GPS DMS to decimal degrees
+          if (result.GPSLatitude && result.GPSLongitude) {
+            const lat = result.GPSLatitude;
+            const lon = result.GPSLongitude;
+            let latDec = lat[0] + lat[1] / 60 + lat[2] / 3600;
+            let lonDec = lon[0] + lon[1] / 60 + lon[2] / 3600;
+            if (result.GPSLatitudeRef === "S") latDec = -latDec;
+            if (result.GPSLongitudeRef === "W") lonDec = -lonDec;
+            result["GPS Coordinates"] = latDec.toFixed(6) + ", " + lonDec.toFixed(6);
+            result["GPS Map Link"] = "https://www.google.com/maps?q=" + latDec.toFixed(6) + "," + lonDec.toFixed(6);
+            // Clean up raw GPS fields
+            delete result.GPSLatitude; delete result.GPSLongitude;
+            delete result.GPSLatitudeRef; delete result.GPSLongitudeRef;
+          }
+          if (result.GPSAltitude) {
+            result["GPS Altitude"] = result.GPSAltitude.toFixed(1) + " m";
+            delete result.GPSAltitude; delete result.GPSAltitudeRef;
+          }
+          if (result.GPSDateStamp) {
+            result["GPS Date"] = result.GPSDateStamp;
+            delete result.GPSDateStamp;
+          }
+
           return Object.keys(result).length ? result : null;
         }
         if ((marker & 0xFF00) !== 0xFF00) break;
