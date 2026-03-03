@@ -1,28 +1,56 @@
 const express = require("express");
 const https = require("https");
+const http = require("http");
 const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const multer = require("multer");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+// Ensure uploads directory exists
+const UPLOADS_DIR = path.join(__dirname, "uploads");
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
-// Helper: make an HTTPS GET request and return JSON
+// Multer config
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || ".jpg";
+    cb(null, crypto.randomBytes(16).toString("hex") + ext);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"));
+  },
+});
+
+app.use(express.json({ limit: "15mb" }));
+app.use(express.static(path.join(__dirname, "public")));
+app.use("/uploads", express.static(UPLOADS_DIR));
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
 function fetchJSON(url, headers = {}) {
   return new Promise((resolve, reject) => {
     const opts = new URL(url);
+    const driver = opts.protocol === "https:" ? https : http;
     const reqOpts = {
       hostname: opts.hostname,
       path: opts.pathname + opts.search,
       method: "GET",
       headers: {
-        "User-Agent": "PersonLookup-Educational/1.0",
+        "User-Agent": "PersonLookup-Educational/2.0",
         Accept: "application/json",
         ...headers,
       },
     };
-    const req = https.request(reqOpts, (res) => {
+    const req = driver.request(reqOpts, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
@@ -42,20 +70,20 @@ function fetchJSON(url, headers = {}) {
   });
 }
 
-// Helper: make an HTTPS GET and return raw text
 function fetchText(url, headers = {}) {
   return new Promise((resolve, reject) => {
     const opts = new URL(url);
+    const driver = opts.protocol === "https:" ? https : http;
     const reqOpts = {
       hostname: opts.hostname,
       path: opts.pathname + opts.search,
       method: "GET",
       headers: {
-        "User-Agent": "PersonLookup-Educational/1.0",
+        "User-Agent": "PersonLookup-Educational/2.0",
         ...headers,
       },
     };
-    const req = https.request(reqOpts, (res) => {
+    const req = driver.request(reqOpts, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => resolve({ status: res.statusCode, data }));
@@ -69,7 +97,32 @@ function fetchText(url, headers = {}) {
   });
 }
 
-// ── Lookup modules ──────────────────────────────────────────────────────
+// Build a multipart/form-data body from fields and file buffer
+function buildMultipart(fields, fileField, fileBuffer, filename, contentType) {
+  const boundary =
+    "----PersonLookup" + crypto.randomBytes(16).toString("hex");
+  const parts = [];
+
+  for (const [key, val] of Object.entries(fields)) {
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`
+      )
+    );
+  }
+
+  parts.push(
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`
+    )
+  );
+  parts.push(fileBuffer);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+  return { boundary, body: Buffer.concat(parts) };
+}
+
+// ── Text Lookup modules ─────────────────────────────────────────────────
 
 async function lookupGitHub(username) {
   try {
@@ -104,7 +157,6 @@ async function lookupGitHubByName(name) {
     );
     if (status !== 200 || !data || !data.items || data.items.length === 0)
       return null;
-
     const results = [];
     for (const user of data.items.slice(0, 3)) {
       const detail = await lookupGitHub(user.login);
@@ -162,10 +214,11 @@ async function lookupWikipedia(name) {
 
 async function lookupGravatar(query) {
   try {
-    // Gravatar profiles by hash or username
-    const crypto = require("crypto");
     const hash = query.includes("@")
-      ? crypto.createHash("md5").update(query.trim().toLowerCase()).digest("hex")
+      ? crypto
+          .createHash("md5")
+          .update(query.trim().toLowerCase())
+          .digest("hex")
       : query.toLowerCase();
     const { status, data } = await fetchJSON(
       `https://en.gravatar.com/${encodeURIComponent(hash)}.json`
@@ -234,7 +287,6 @@ async function lookupHackerNews(username) {
 }
 
 async function lookupDNS(query) {
-  // If it looks like a domain, look up DNS records
   if (!/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(query)) return null;
   try {
     const { status, data } = await fetchJSON(
@@ -261,7 +313,12 @@ async function checkPlatformExists(username, platform, url) {
   try {
     const { status } = await fetchText(url);
     if (status === 200) {
-      return { source: platform, icon: platform.toLowerCase(), profile_url: url, exists: true };
+      return {
+        source: platform,
+        icon: platform.toLowerCase(),
+        profile_url: url,
+        exists: true,
+      };
     }
     return null;
   } catch {
@@ -271,20 +328,24 @@ async function checkPlatformExists(username, platform, url) {
 
 async function lookupUsernameAvailability(username) {
   const checks = [
-    { platform: "GitLab", url: `https://gitlab.com/${encodeURIComponent(username)}` },
-    { platform: "Keybase", url: `https://keybase.io/${encodeURIComponent(username)}` },
+    {
+      platform: "GitLab",
+      url: `https://gitlab.com/${encodeURIComponent(username)}`,
+    },
+    {
+      platform: "Keybase",
+      url: `https://keybase.io/${encodeURIComponent(username)}`,
+    },
   ];
-
   const results = await Promise.allSettled(
     checks.map((c) => checkPlatformExists(username, c.platform, c.url))
   );
-
   return results
     .filter((r) => r.status === "fulfilled" && r.value !== null)
     .map((r) => r.value);
 }
 
-// ── Main lookup endpoint ────────────────────────────────────────────────
+// ── Text lookup endpoint ────────────────────────────────────────────────
 
 app.post("/api/lookup", async (req, res) => {
   const { query } = req.body;
@@ -297,8 +358,6 @@ app.post("/api/lookup", async (req, res) => {
   const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized);
 
   const tasks = [];
-
-  // Always search Wikipedia by name
   tasks.push(lookupWikipedia(sanitized));
 
   if (isEmail) {
@@ -314,7 +373,6 @@ app.post("/api/lookup", async (req, res) => {
     tasks.push(lookupUsernameAvailability(sanitized));
     tasks.push(lookupDNS(sanitized));
   } else {
-    // Search by name
     tasks.push(lookupGitHubByName(sanitized));
     tasks.push(lookupStackOverflow(sanitized));
   }
@@ -323,16 +381,146 @@ app.post("/api/lookup", async (req, res) => {
   const results = [];
   for (const r of settled) {
     if (r.status === "fulfilled" && r.value !== null) {
-      if (Array.isArray(r.value)) {
-        results.push(...r.value);
-      } else {
-        results.push(r.value);
-      }
+      if (Array.isArray(r.value)) results.push(...r.value);
+      else results.push(r.value);
     }
   }
 
   res.json({ query: sanitized, results, count: results.length });
 });
+
+// ── Image upload endpoint ───────────────────────────────────────────────
+
+app.post("/api/upload", upload.single("image"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+  res.json({
+    filename: req.file.filename,
+    url: `/uploads/${req.file.filename}`,
+    size: req.file.size,
+    mimetype: req.file.mimetype,
+  });
+});
+
+// ── Server-side reverse image search proxy ──────────────────────────────
+// Submits the uploaded image to search engines and returns redirect URLs
+
+function proxyReverseSearch(engine, fileBuffer, filename, contentType) {
+  return new Promise((resolve, reject) => {
+    let host, postPath, fileField, extraFields;
+
+    switch (engine) {
+      case "google":
+        host = "www.google.com";
+        postPath = "/searchbyimage/upload";
+        fileField = "encoded_image";
+        extraFields = { image_url: "", sbisrc: "cr_1", image_content: "" };
+        break;
+      case "yandex":
+        host = "yandex.com";
+        postPath = "/images/search?rpt=imageview&format=json";
+        fileField = "upfile";
+        extraFields = {};
+        break;
+      case "tineye":
+        host = "tineye.com";
+        postPath = "/search";
+        fileField = "image";
+        extraFields = {};
+        break;
+      default:
+        return reject(new Error("Unknown engine"));
+    }
+
+    const { boundary, body } = buildMultipart(
+      extraFields,
+      fileField,
+      fileBuffer,
+      filename,
+      contentType
+    );
+
+    const options = {
+      hostname: host,
+      path: postPath,
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        // Most engines return a 302 redirect to results
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          let loc = res.headers.location;
+          if (loc.startsWith("/")) loc = `https://${host}${loc}`;
+          resolve({ engine, redirect: loc, status: "redirect" });
+        } else {
+          resolve({ engine, status: "html", statusCode: res.statusCode });
+        }
+      });
+    });
+
+    req.on("error", (err) => resolve({ engine, status: "error", error: err.message }));
+    req.setTimeout(15000, () => {
+      req.destroy();
+      resolve({ engine, status: "error", error: "timeout" });
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+app.post("/api/reverse-search", async (req, res) => {
+  const { filename } = req.body;
+  if (!filename) return res.status(400).json({ error: "filename required" });
+
+  const filePath = path.join(UPLOADS_DIR, path.basename(filename));
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "File not found" });
+  }
+
+  const fileBuffer = fs.readFileSync(filePath);
+  const ext = path.extname(filename).toLowerCase();
+  const mimeMap = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
+  const contentType = mimeMap[ext] || "image/jpeg";
+
+  const engines = ["google", "yandex", "tineye"];
+  const results = await Promise.allSettled(
+    engines.map((e) => proxyReverseSearch(e, fileBuffer, filename, contentType))
+  );
+
+  const output = results.map((r) =>
+    r.status === "fulfilled" ? r.value : { engine: "unknown", status: "error" }
+  );
+
+  res.json({ results: output });
+});
+
+// ── Cleanup old uploads every 10 minutes ────────────────────────────────
+
+setInterval(() => {
+  if (!fs.existsSync(UPLOADS_DIR)) return;
+  const now = Date.now();
+  for (const file of fs.readdirSync(UPLOADS_DIR)) {
+    try {
+      const filePath = path.join(UPLOADS_DIR, file);
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > 30 * 60 * 1000) fs.unlinkSync(filePath);
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+}, 10 * 60 * 1000);
+
+// ── Start ───────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`Person Lookup running at http://localhost:${PORT}`);
