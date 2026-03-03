@@ -1612,6 +1612,719 @@ app.post("/api/face-scan", async (req, res) => {
   res.end();
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+//  MEGA DEEP SEARCH — takes multiple accounts, builds full person profile
+// ══════════════════════════════════════════════════════════════════════════
+
+// Platform-specific deep scrapers that extract maximum data
+
+async function deepScrapeRoblox(username) {
+  const results = { platform: "Roblox", username, data: {}, friends: [], groups: [], avatar: null };
+  try {
+    // Search for user
+    const search = await safeFetch(`https://users.roblox.com/v1/users/search?keyword=${encodeURIComponent(username)}&limit=10`);
+    if (!search?.data?.length) return results;
+    const user = search.data.find(u => u.name.toLowerCase() === username.toLowerCase()) || search.data[0];
+    const userId = user.id;
+    results.data = { id: userId, name: user.name, displayName: user.displayName };
+    results.data.profile_url = `https://www.roblox.com/users/${userId}/profile`;
+
+    // Get full profile
+    const [profile, friends, groups, presence, badges] = await Promise.allSettled([
+      safeFetch(`https://users.roblox.com/v1/users/${userId}`),
+      safeFetch(`https://friends.roblox.com/v1/users/${userId}/friends?limit=50`),
+      safeFetch(`https://groups.roblox.com/v1/users/${userId}/groups/roles`),
+      safeFetch(`https://presence.roblox.com/v1/presence/users`, { "Content-Type": "application/json" }),
+      safeFetch(`https://accountinformation.roblox.com/v1/users/${userId}/roblox-badges`),
+    ]);
+
+    if (profile.status === "fulfilled" && profile.value) {
+      const p = profile.value;
+      results.data.description = p.description;
+      results.data.created = p.created;
+      results.data.isBanned = p.isBanned;
+      results.data.hasVerifiedBadge = p.hasVerifiedBadge;
+    }
+
+    if (friends.status === "fulfilled" && friends.value?.data) {
+      results.friends = friends.value.data.slice(0, 20).map(f => ({
+        name: f.name, displayName: f.displayName, id: f.id,
+        url: `https://www.roblox.com/users/${f.id}/profile`,
+      }));
+      results.data.friend_count = friends.value.data.length;
+    }
+
+    if (groups.status === "fulfilled" && groups.value?.data) {
+      results.groups = groups.value.data.slice(0, 15).map(g => ({
+        name: g.group.name, id: g.group.id, role: g.role.name,
+        memberCount: g.group.memberCount,
+        url: `https://www.roblox.com/groups/${g.group.id}`,
+      }));
+    }
+
+    // Avatar
+    try {
+      const av = await safeFetch(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=420x420&format=Png`);
+      if (av?.data?.[0]?.imageUrl) results.avatar = av.data[0].imageUrl;
+    } catch {}
+
+    // Inventory/favorites for more data
+    try {
+      const favGames = await safeFetch(`https://games.roblox.com/v2/users/${userId}/favorite/games?limit=10`);
+      if (favGames?.data) results.data.favorite_games = favGames.data.map(g => g.name).join(", ");
+    } catch {}
+
+  } catch {}
+  return results;
+}
+
+async function deepScrapeGitHub(username) {
+  const results = { platform: "GitHub", username, data: {}, repos: [], activity: [], avatar: null, emails: [] };
+  try {
+    const [profile, repos, events, gists, orgs] = await Promise.allSettled([
+      safeFetch(`https://api.github.com/users/${encodeURIComponent(username)}`),
+      safeFetch(`https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=30`),
+      safeFetch(`https://api.github.com/users/${encodeURIComponent(username)}/events/public?per_page=100`),
+      safeFetch(`https://api.github.com/users/${encodeURIComponent(username)}/gists?per_page=10`),
+      safeFetch(`https://api.github.com/users/${encodeURIComponent(username)}/orgs`),
+    ]);
+
+    if (profile.status === "fulfilled" && profile.value && !profile.value.message) {
+      const p = profile.value;
+      results.data = {
+        name: p.name, bio: p.bio, location: p.location, company: p.company,
+        blog: p.blog, twitter_username: p.twitter_username, email: p.email,
+        public_repos: p.public_repos, public_gists: p.public_gists,
+        followers: p.followers, following: p.following,
+        created: p.created_at, updated: p.updated_at,
+        profile_url: p.html_url, hireable: p.hireable,
+      };
+      results.avatar = p.avatar_url;
+    }
+
+    if (repos.status === "fulfilled" && repos.value) {
+      results.repos = repos.value.filter(r => !r.fork).slice(0, 15).map(r => ({
+        name: r.name, description: r.description, language: r.language,
+        stars: r.stargazers_count, forks: r.forks_count, url: r.html_url,
+        updated: r.updated_at,
+      }));
+      results.data.languages = [...new Set(repos.value.map(r => r.language).filter(Boolean))].join(", ");
+      results.data.total_stars = repos.value.reduce((s, r) => s + r.stargazers_count, 0);
+    }
+
+    if (events.status === "fulfilled" && events.value) {
+      // Extract emails from push events
+      const emails = new Set();
+      const activeHours = new Set();
+      for (const ev of events.value) {
+        if (ev.type === "PushEvent" && ev.payload?.commits) {
+          for (const c of ev.payload.commits) {
+            if (c.author?.email && !c.author.email.includes("noreply")) emails.add(c.author.email);
+          }
+        }
+        activeHours.add(new Date(ev.created_at).getUTCHours());
+      }
+      results.emails = [...emails];
+      results.data.active_hours = [...activeHours].sort((a, b) => a - b).map(h => h + ":00 UTC").join(", ");
+      results.data.recent_activity = events.value.slice(0, 5).map(e => ({
+        type: e.type.replace("Event", ""), repo: e.repo?.name, date: e.created_at,
+      }));
+    }
+
+    if (orgs.status === "fulfilled" && orgs.value) {
+      results.data.organizations = orgs.value.map(o => o.login).join(", ");
+    }
+  } catch {}
+  return results;
+}
+
+async function deepScrapeReddit(username) {
+  const results = { platform: "Reddit", username, data: {}, posts: [], avatar: null };
+  try {
+    const [about, posts, comments] = await Promise.allSettled([
+      safeFetch(`https://www.reddit.com/user/${encodeURIComponent(username)}/about.json`),
+      safeFetch(`https://www.reddit.com/user/${encodeURIComponent(username)}/submitted.json?limit=25&sort=top`),
+      safeFetch(`https://www.reddit.com/user/${encodeURIComponent(username)}/comments.json?limit=25&sort=top`),
+    ]);
+
+    if (about.status === "fulfilled" && about.value?.data) {
+      const d = about.value.data;
+      results.data = {
+        name: d.name, link_karma: d.link_karma, comment_karma: d.comment_karma,
+        total_karma: d.total_karma, created: new Date(d.created_utc * 1000).toISOString(),
+        has_verified_email: d.has_verified_email, is_gold: d.is_gold,
+        profile_url: `https://www.reddit.com/user/${d.name}`,
+      };
+      results.avatar = d.icon_img?.split("?")[0];
+    }
+
+    if (posts.status === "fulfilled" && posts.value?.data?.children) {
+      const subreddits = new Set();
+      results.posts = posts.value.data.children.slice(0, 10).map(p => {
+        subreddits.add(p.data.subreddit);
+        return {
+          title: p.data.title, subreddit: p.data.subreddit, score: p.data.score,
+          url: `https://www.reddit.com${p.data.permalink}`, created: new Date(p.data.created_utc * 1000).toISOString(),
+        };
+      });
+      results.data.active_subreddits = [...subreddits].join(", ");
+    }
+
+    if (comments.status === "fulfilled" && comments.value?.data?.children) {
+      const commentSubs = new Set();
+      for (const c of comments.value.data.children) {
+        commentSubs.add(c.data.subreddit);
+      }
+      results.data.comment_subreddits = [...commentSubs].join(", ");
+    }
+  } catch {}
+  return results;
+}
+
+async function deepScrapeSteam(username) {
+  const results = { platform: "Steam", username, data: {}, avatar: null };
+  try {
+    // Scrape the Steam community page
+    const resp = await chainRequest(`https://steamcommunity.com/id/${encodeURIComponent(username)}`, { timeout: 15000 });
+    const html = resp.body || "";
+
+    // Extract profile data from HTML
+    const nameMatch = html.match(/class="actual_persona_name">([^<]+)/i);
+    if (nameMatch) results.data.display_name = nameMatch[1].trim();
+
+    const summaryMatch = html.match(/class="profile_summary">([\s\S]*?)<\/div>/i);
+    if (summaryMatch) results.data.summary = summaryMatch[1].replace(/<[^>]*>/g, "").trim();
+
+    const avatarMatch = html.match(/class="playerAvatarAutoSizeInner">\s*<img[^>]+src="([^"]+)"/i);
+    if (avatarMatch) results.avatar = avatarMatch[1];
+
+    const locationMatch = html.match(/class="header_real_name ellipsis">([\s\S]*?)<\/bdi>/i);
+    if (locationMatch) {
+      const loc = locationMatch[1].replace(/<[^>]*>/g, "").trim();
+      if (loc) results.data.real_name_or_location = loc;
+    }
+
+    const levelMatch = html.match(/class="friendPlayerLevelNum">(\d+)/i);
+    if (levelMatch) results.data.level = parseInt(levelMatch[1]);
+
+    results.data.profile_url = `https://steamcommunity.com/id/${username}`;
+
+    // Extract games if visible
+    const gamesResp = await chainRequest(`https://steamcommunity.com/id/${encodeURIComponent(username)}/games/?tab=all`, { timeout: 12000 });
+    const gamesHtml = gamesResp.body || "";
+    const gameCountMatch = gamesHtml.match(/(\d+)\s*Games?\s*Owned/i);
+    if (gameCountMatch) results.data.games_owned = parseInt(gameCountMatch[1]);
+  } catch {}
+  return results;
+}
+
+async function deepScrapeDiscord(username) {
+  // Discord doesn't have a public API for user lookup, but we can search the web
+  const results = { platform: "Discord", username, data: {}, avatar: null };
+  try {
+    // Search for Discord presence across the web
+    const cleanName = username.replace(/#\d+$/, "");
+    results.data.searched_name = cleanName;
+    results.data.profile_url = null; // Discord has no public profiles
+
+    // Search for the username on Discord-related sites
+    const queries = [
+      `"${cleanName}" site:discord.me`, `"${cleanName}" discord profile`,
+      `"${cleanName}" site:discordservers.com`, `"${cleanName}" site:disboard.org`,
+    ];
+    const webResults = [];
+    for (const q of queries) {
+      try {
+        const wr = await scrapeWebSearch(q);
+        webResults.push(...wr.slice(0, 3));
+      } catch {}
+    }
+    results.data.web_mentions = webResults.slice(0, 8);
+  } catch {}
+  return results;
+}
+
+async function deepScrapeTikTok(username) {
+  const results = { platform: "TikTok", username, data: {}, avatar: null };
+  try {
+    const resp = await chainRequest(`https://www.tiktok.com/@${encodeURIComponent(username)}`, { timeout: 15000 });
+    const html = resp.body || "";
+
+    // Extract from meta tags and JSON-LD
+    const descMatch = html.match(/<meta[^>]+name="description"[^>]*content="([^"]+)"/i);
+    if (descMatch) results.data.description = descMatch[1];
+
+    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+    if (titleMatch) results.data.page_title = titleMatch[1].trim();
+
+    // Try to extract from JSON in page
+    const jsonMatch = html.match(/"userInfo"\s*:\s*(\{[\s\S]*?\})\s*,\s*"/i);
+    if (jsonMatch) {
+      try {
+        const userInfo = JSON.parse(jsonMatch[1]);
+        if (userInfo.user) {
+          results.data.nickname = userInfo.user.nickname;
+          results.data.signature = userInfo.user.signature;
+          results.data.verified = userInfo.user.verified;
+          results.avatar = userInfo.user.avatarLarger || userInfo.user.avatarMedium;
+        }
+        if (userInfo.stats) {
+          results.data.followers = userInfo.stats.followerCount;
+          results.data.following = userInfo.stats.followingCount;
+          results.data.likes = userInfo.stats.heartCount;
+          results.data.videos = userInfo.stats.videoCount;
+        }
+      } catch {}
+    }
+
+    // Try og:image for avatar
+    const ogImg = html.match(/<meta[^>]+property="og:image"[^>]*content="([^"]+)"/i);
+    if (ogImg && !results.avatar) results.avatar = ogImg[1];
+
+    results.data.profile_url = `https://www.tiktok.com/@${username}`;
+  } catch {}
+  return results;
+}
+
+async function deepScrapeInstagram(username) {
+  const results = { platform: "Instagram", username, data: {}, avatar: null };
+  try {
+    // Instagram is heavily protected, but we can try the web profile page
+    const resp = await chainRequest(`https://www.instagram.com/${encodeURIComponent(username)}/`, {
+      timeout: 15000,
+      headers: { "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9" },
+    });
+    const html = resp.body || "";
+
+    // Extract from meta tags
+    const descMatch = html.match(/<meta[^>]+(?:name|property)="(?:og:)?description"[^>]*content="([^"]+)"/i);
+    if (descMatch) results.data.description = descMatch[1];
+
+    const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]*content="([^"]+)"/i);
+    if (titleMatch) results.data.title = titleMatch[1];
+
+    const ogImg = html.match(/<meta[^>]+property="og:image"[^>]*content="([^"]+)"/i);
+    if (ogImg) results.avatar = ogImg[1];
+
+    // Try to parse Instagram description format: "X Followers, Y Following, Z Posts - ..."
+    if (results.data.description) {
+      const statsMatch = results.data.description.match(/(\d[\d,.]*)\s*Followers?,\s*(\d[\d,.]*)\s*Following,\s*(\d[\d,.]*)\s*Posts?/i);
+      if (statsMatch) {
+        results.data.followers = statsMatch[1].replace(/,/g, "");
+        results.data.following = statsMatch[2].replace(/,/g, "");
+        results.data.posts = statsMatch[3].replace(/,/g, "");
+      }
+      // Extract bio (after the stats part)
+      const bioMatch = results.data.description.match(/Posts?\s*-\s*(.*)/i);
+      if (bioMatch) results.data.bio = bioMatch[1].trim();
+    }
+
+    results.data.profile_url = `https://www.instagram.com/${username}/`;
+  } catch {}
+  return results;
+}
+
+async function deepScrapeTwitter(username) {
+  const results = { platform: "Twitter/X", username, data: {}, avatar: null };
+  try {
+    // Twitter/X is very protected, try Nitter instances and web scraping
+    const resp = await chainRequest(`https://nitter.privacydev.net/${encodeURIComponent(username)}`, { timeout: 15000 });
+    const html = resp.body || "";
+
+    const nameMatch = html.match(/class="profile-card-fullname"[^>]*>([^<]+)/i);
+    if (nameMatch) results.data.name = nameMatch[1].trim();
+
+    const bioMatch = html.match(/class="profile-bio"[^>]*>([\s\S]*?)<\/p>/i);
+    if (bioMatch) results.data.bio = bioMatch[1].replace(/<[^>]*>/g, "").trim();
+
+    const locationMatch = html.match(/class="profile-location"[^>]*>([\s\S]*?)<\/div>/i);
+    if (locationMatch) results.data.location = locationMatch[1].replace(/<[^>]*>/g, "").trim();
+
+    const joinedMatch = html.match(/class="profile-joindate"[^>]*>([\s\S]*?)<\/div>/i);
+    if (joinedMatch) results.data.joined = joinedMatch[1].replace(/<[^>]*>/g, "").trim();
+
+    const statsRegex = /class="profile-stat-num"[^>]*>([^<]+)/gi;
+    const stats = [...html.matchAll(statsRegex)].map(m => m[1].trim());
+    if (stats.length >= 3) {
+      results.data.tweets = stats[0];
+      results.data.following = stats[1];
+      results.data.followers = stats[2];
+      if (stats[3]) results.data.likes = stats[3];
+    }
+
+    const avatarMatch = html.match(/class="profile-card-avatar"[^>]*src="([^"]+)"/i);
+    if (avatarMatch) results.avatar = avatarMatch[1].startsWith("/") ? "https://nitter.privacydev.net" + avatarMatch[1] : avatarMatch[1];
+
+    results.data.profile_url = `https://x.com/${username}`;
+  } catch {}
+  return results;
+}
+
+async function deepScrapeYouTube(username) {
+  const results = { platform: "YouTube", username, data: {}, avatar: null };
+  try {
+    const handle = username.startsWith("@") ? username : `@${username}`;
+    const resp = await chainRequest(`https://www.youtube.com/${handle}`, { timeout: 15000 });
+    const html = resp.body || "";
+
+    const titleMatch = html.match(/<meta[^>]+property="og:title"[^>]*content="([^"]+)"/i);
+    if (titleMatch) results.data.channel_name = titleMatch[1];
+
+    const descMatch = html.match(/<meta[^>]+property="og:description"[^>]*content="([^"]+)"/i);
+    if (descMatch) results.data.description = descMatch[1];
+
+    const ogImg = html.match(/<meta[^>]+property="og:image"[^>]*content="([^"]+)"/i);
+    if (ogImg) results.avatar = ogImg[1];
+
+    // Try to extract subscriber count
+    const subMatch = html.match(/"subscriberCountText"\s*:\s*\{"simpleText"\s*:\s*"([^"]+)"\}/i);
+    if (subMatch) results.data.subscribers = subMatch[1];
+
+    const vidCountMatch = html.match(/"videosCountText"[\s\S]*?"text"\s*:\s*"([^"]+)"/i);
+    if (vidCountMatch) results.data.video_count = vidCountMatch[1];
+
+    results.data.profile_url = `https://www.youtube.com/${handle}`;
+  } catch {}
+  return results;
+}
+
+// Scrape web for any mention of any of the person's known identifiers
+async function megaWebSearch(identifiers) {
+  const allResults = [];
+  const queries = new Set();
+
+  for (const id of identifiers) {
+    if (!id) continue;
+    queries.add(`"${id}"`);
+    queries.add(`"${id}" profile`);
+    queries.add(`"${id}" social media`);
+  }
+
+  // Also try cross-referencing identifiers
+  const ids = identifiers.filter(Boolean);
+  if (ids.length >= 2) {
+    queries.add(`"${ids[0]}" "${ids[1]}"`);
+  }
+
+  for (const q of [...queries].slice(0, 10)) {
+    try {
+      const wr = await scrapeWebSearch(q);
+      for (const r of wr.slice(0, 5)) {
+        if (!allResults.some(x => x.url === r.url)) {
+          allResults.push({ ...r, platform: detectPlatform(r.url), source_engine: "web" });
+        }
+      }
+    } catch {}
+  }
+  return allResults;
+}
+
+// ── Main Mega Deep Search endpoint ──────────────────────────────────────
+
+app.post("/api/mega-search", async (req, res) => {
+  const inputs = req.body;
+  if (!inputs || typeof inputs !== "object") return res.status(400).json({ error: "Invalid input" });
+
+  // SSE
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  function send(event, data) { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {} }
+
+  // Normalize inputs — strip URLs to usernames, clean up
+  function extractUser(val, platformHint) {
+    if (!val) return null;
+    val = val.trim().replace(/^@/, "");
+    // If it's a URL, extract the username part
+    try {
+      const url = new URL(val.startsWith("http") ? val : "https://x.com/" + val);
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (parts.length && val.includes("/")) {
+        // Strip common prefixes
+        if (parts[0] === "in" || parts[0] === "user" || parts[0] === "c" || parts[0] === "channel" || parts[0] === "people" || parts[0] === "id") return parts[1] || parts[0];
+        return parts[0].replace(/^@/, "");
+      }
+    } catch {}
+    return val.replace(/#\d+$/, "").trim(); // Remove Discord discriminator for searches
+  }
+
+  const name = inputs.name?.trim() || null;
+  const username = extractUser(inputs.username);
+  const email = inputs.email?.trim() || null;
+  const instagram = extractUser(inputs.instagram, "instagram");
+  const discord = inputs.discord?.trim() || null;
+  const roblox = extractUser(inputs.roblox, "roblox");
+  const twitter = extractUser(inputs.twitter, "twitter");
+  const tiktok = extractUser(inputs.tiktok, "tiktok");
+  const youtube = extractUser(inputs.youtube, "youtube");
+  const github = extractUser(inputs.github, "github");
+  const steam = extractUser(inputs.steam, "steam");
+  const other = inputs.other?.trim() || null;
+
+  // Collect all known identifiers for cross-referencing
+  const allIdentifiers = [name, username, email, instagram, discord, roblox, twitter, tiktok, youtube, github, steam, other].filter(Boolean);
+  const allUsernames = new Set([username, instagram, roblox, twitter, tiktok, youtube, github, steam].filter(Boolean));
+
+  if (!allIdentifiers.length) {
+    send("error", { message: "Please enter at least one piece of information" });
+    return res.end();
+  }
+
+  const profile = {
+    name: name, avatar: null, bio: null, location: null, created: null,
+    usernames: {}, stats: {}, accounts: [], photos: [], details: [],
+    emails: [], web_mentions: [], raw: [],
+  };
+
+  // ── Phase 1: Platform-specific deep scraping ──
+  send("phase", { phase: 1, label: "Deep scraping known accounts..." });
+
+  const scrapeJobs = [];
+  if (roblox) scrapeJobs.push(["Roblox", deepScrapeRoblox(roblox)]);
+  if (github) scrapeJobs.push(["GitHub", deepScrapeGitHub(github)]);
+  if (twitter) scrapeJobs.push(["Twitter", deepScrapeTwitter(twitter)]);
+  if (instagram) scrapeJobs.push(["Instagram", deepScrapeInstagram(instagram)]);
+  if (tiktok) scrapeJobs.push(["TikTok", deepScrapeTikTok(tiktok)]);
+  if (youtube) scrapeJobs.push(["YouTube", deepScrapeYouTube(youtube)]);
+  if (steam) scrapeJobs.push(["Steam", deepScrapeSteam(steam)]);
+  if (discord) scrapeJobs.push(["Discord", deepScrapeDiscord(discord)]);
+
+  // Also scrape Reddit if username provided
+  if (username) scrapeJobs.push(["Reddit", deepScrapeReddit(username)]);
+
+  const scrapeResults = await Promise.allSettled(scrapeJobs.map(j => j[1]));
+
+  for (let i = 0; i < scrapeResults.length; i++) {
+    const label = scrapeJobs[i][0];
+    const r = scrapeResults[i];
+    if (r.status === "fulfilled" && r.value) {
+      const scrape = r.value;
+      send("scrape_result", { platform: label, data: scrape.data, has_avatar: !!scrape.avatar });
+
+      // Merge into profile
+      if (scrape.avatar && !profile.avatar) profile.avatar = scrape.avatar;
+      if (scrape.avatar) profile.photos.push(scrape.avatar);
+      if (scrape.data.name && !profile.name) profile.name = scrape.data.name;
+      if (scrape.data.display_name && !profile.name) profile.name = scrape.data.display_name;
+      if (scrape.data.nickname && !profile.name) profile.name = scrape.data.nickname;
+      if (scrape.data.channel_name && !profile.name) profile.name = scrape.data.channel_name;
+      if (scrape.data.bio) profile.bio = profile.bio || scrape.data.bio;
+      if (scrape.data.description && !profile.bio) profile.bio = scrape.data.description;
+      if (scrape.data.summary && !profile.bio) profile.bio = scrape.data.summary;
+      if (scrape.data.signature && !profile.bio) profile.bio = scrape.data.signature;
+      if (scrape.data.location) profile.location = profile.location || scrape.data.location;
+      if (scrape.data.real_name_or_location && !profile.location) profile.location = scrape.data.real_name_or_location;
+      if (scrape.data.created) profile.created = profile.created || scrape.data.created;
+      if (scrape.emails?.length) profile.emails.push(...scrape.emails);
+
+      // Add as linked account
+      profile.accounts.push({
+        platform: scrape.platform,
+        username: scrape.username,
+        url: scrape.data.profile_url,
+        avatar: scrape.avatar,
+        data: scrape.data,
+      });
+
+      // Stats
+      for (const key of ["followers", "following", "friends", "friend_count", "likes", "videos", "posts", "subscribers",
+                          "link_karma", "comment_karma", "total_karma", "public_repos", "total_stars", "games_owned",
+                          "level", "tweets", "video_count"]) {
+        if (scrape.data[key] != null) {
+          profile.stats[`${scrape.platform} ${key}`] = scrape.data[key];
+        }
+      }
+
+      // Details
+      for (const [k, v] of Object.entries(scrape.data)) {
+        if (v && typeof v === "string" && v.length < 500 && !["profile_url", "name", "display_name", "nickname", "channel_name"].includes(k)) {
+          profile.details.push({ platform: scrape.platform, key: k, value: v });
+        }
+      }
+
+      // Friends/connections
+      if (scrape.friends?.length) {
+        profile.details.push({ platform: scrape.platform, key: "Friends", value: scrape.friends.map(f => f.name || f.displayName).join(", ") });
+      }
+      if (scrape.groups?.length) {
+        profile.details.push({ platform: scrape.platform, key: "Groups", value: scrape.groups.map(g => g.name + (g.role ? ` (${g.role})` : "")).join(", ") });
+      }
+      if (scrape.posts?.length) {
+        for (const p of scrape.posts.slice(0, 5)) {
+          profile.details.push({ platform: scrape.platform, key: "Post", value: (p.title || "").slice(0, 200) + (p.subreddit ? ` (r/${p.subreddit})` : "") });
+        }
+      }
+      if (scrape.repos?.length) {
+        for (const r of scrape.repos.slice(0, 5)) {
+          profile.details.push({ platform: scrape.platform, key: "Repo", value: `${r.name} — ${r.description || ""}`.slice(0, 200) + ` (${r.language || "?"}, ${r.stars} stars)` });
+        }
+      }
+
+      profile.raw.push(scrape);
+    }
+  }
+
+  // ── Phase 2: API lookups for all known usernames ──
+  send("phase", { phase: 2, label: "Running API lookups across platforms..." });
+
+  const apiJobs = [];
+  const primaryUser = username || instagram || twitter || github || roblox || tiktok;
+
+  if (primaryUser) {
+    apiJobs.push(lookupGitHub(primaryUser), lookupReddit(primaryUser), lookupStackOverflow(primaryUser),
+      lookupHackerNews(primaryUser), lookupGitLab(primaryUser), lookupKeybase(primaryUser),
+      lookupNpm(primaryUser), lookupDockerHub(primaryUser), lookupDevTo(primaryUser),
+      lookupLichess(primaryUser), lookupChessCom(primaryUser), lookupMastodon(primaryUser),
+      lookupGravatar(primaryUser), lookupCratesIO(primaryUser), lookupHuggingFace(primaryUser));
+  }
+  if (name) {
+    apiJobs.push(lookupWikipedia(name), lookupDuckDuckGo(name), lookupWikidata(name),
+      lookupOpenLibrary(name));
+  }
+  if (email) {
+    apiJobs.push(lookupGravatar(email));
+  }
+
+  const apiResults = await Promise.allSettled(apiJobs);
+  for (const r of apiResults) {
+    if (r.status === "fulfilled" && r.value) {
+      const items = Array.isArray(r.value) ? r.value : [r.value];
+      for (const item of items) {
+        send("api_result", { source: item.source, name: item.name });
+        // Merge useful data
+        if (item.avatar && !profile.avatar) profile.avatar = item.avatar;
+        if (item.avatar) profile.photos.push(item.avatar);
+        if (item.name && !profile.name && item.name !== primaryUser) profile.name = item.name;
+        if (item.bio && !profile.bio) profile.bio = item.bio;
+        if (item.location && !profile.location) profile.location = item.location;
+        if (item.profile_url) {
+          profile.accounts.push({
+            platform: item.source, username: item.username || item.name,
+            url: item.profile_url, avatar: item.avatar, data: item,
+          });
+        }
+        if (item.email) profile.emails.push(item.email);
+        if (item.twitter_username) allUsernames.add(item.twitter_username);
+        if (item.github_username) allUsernames.add(item.github_username);
+
+        // Extract linked accounts from Keybase
+        if (item.linked_accounts) {
+          profile.details.push({ platform: item.source, key: "Linked accounts", value: item.linked_accounts });
+        }
+
+        profile.raw.push(item);
+      }
+    }
+  }
+
+  // ── Phase 3: Username existence check across all discovered usernames ──
+  send("phase", { phase: 3, label: `Checking ${allUsernames.size} username(s) across 26+ platforms...` });
+
+  for (const un of allUsernames) {
+    if (!un || un.length < 2) continue;
+    const checkResults = await checkUsername(un);
+    const found = checkResults.filter(r => r.exists);
+    send("username_check", { username: un, found: found.length, total: checkResults.length });
+
+    for (const f of found) {
+      if (!profile.accounts.some(a => a.url === f.url)) {
+        profile.accounts.push({ platform: f.name, username: un, url: f.url, data: { exists: true } });
+      }
+    }
+  }
+
+  // ── Phase 4: Deep social name search ──
+  if (name || primaryUser) {
+    const searchName = name || primaryUser;
+    send("phase", { phase: 4, label: `Searching "${searchName}" across 31 social platforms...` });
+    const socialResults = await deepSocialSearch(searchName);
+    for (const r of socialResults) {
+      if (!profile.accounts.some(a => a.url === r.url)) {
+        profile.accounts.push({ platform: r.platform || "Web", username: searchName, url: r.url, data: { title: r.title, snippet: r.snippet } });
+      }
+    }
+    send("social_done", { count: socialResults.length });
+  }
+
+  // ── Phase 5: Web search for cross-references ──
+  send("phase", { phase: 5, label: "Searching the web for cross-references and mentions..." });
+  const webResults = await megaWebSearch(allIdentifiers.slice(0, 5));
+  profile.web_mentions = webResults;
+  for (const wr of webResults) {
+    if (wr.platform && !profile.accounts.some(a => a.url === wr.url)) {
+      profile.accounts.push({ platform: wr.platform, username: null, url: wr.url, data: { title: wr.title, snippet: wr.snippet } });
+    }
+  }
+  send("web_done", { count: webResults.length });
+
+  // ── Phase 6: People search engines ──
+  if (name) {
+    send("phase", { phase: 6, label: "Checking people-search databases..." });
+    const peopleSites = [
+      `"${name}" site:spokeo.com`, `"${name}" site:whitepages.com`,
+      `"${name}" site:pipl.com`, `"${name}" site:peekyou.com`,
+      `"${name}" site:socialblade.com`, `"${name}" site:namechk.com`,
+      `"${name}" site:knowem.com`, `"${name}" site:usersearch.org`,
+    ];
+    for (const q of peopleSites) {
+      try {
+        const wr = await scrapeWebSearch(q);
+        for (const r of wr.slice(0, 2)) {
+          profile.web_mentions.push({ ...r, platform: "People Search", source_engine: "people-search" });
+        }
+      } catch {}
+    }
+  }
+
+  // ── Finalize: dedupe accounts, clean up ──
+  send("phase", { phase: 7, label: "Assembling profile..." });
+
+  // Dedupe accounts by URL
+  const seenUrls = new Set();
+  profile.accounts = profile.accounts.filter(a => {
+    if (!a.url) return false;
+    const key = a.url.replace(/^https?:\/\/(?:www\.)?/, "").replace(/\/+$/, "").toLowerCase();
+    if (seenUrls.has(key)) return false;
+    seenUrls.add(key);
+    return true;
+  });
+
+  // Dedupe photos
+  profile.photos = [...new Set(profile.photos.filter(Boolean))];
+
+  // Dedupe emails
+  profile.emails = [...new Set(profile.emails.filter(Boolean))];
+
+  // Dedupe web mentions
+  const seenWeb = new Set();
+  profile.web_mentions = profile.web_mentions.filter(w => {
+    const key = (w.url || "").replace(/^https?:\/\/(?:www\.)?/, "").split("?")[0].toLowerCase();
+    if (seenWeb.has(key)) return false;
+    seenWeb.add(key);
+    return true;
+  });
+
+  send("complete", {
+    profile: {
+      name: profile.name,
+      avatar: profile.avatar,
+      bio: profile.bio,
+      location: profile.location,
+      created: profile.created,
+      emails: profile.emails,
+      stats: profile.stats,
+    },
+    accounts: profile.accounts,
+    photos: profile.photos,
+    details: profile.details,
+    web_mentions: profile.web_mentions.slice(0, 30),
+    total_accounts: profile.accounts.length,
+    total_details: profile.details.length,
+  });
+
+  res.end();
+});
+
 // ── Simple reverse search (for full image) ──────────────────────────────
 
 app.post("/api/reverse-search", async (req, res) => {

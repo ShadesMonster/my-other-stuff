@@ -280,10 +280,66 @@
     .match-bar-track { width: 100%; height: 8px; background: var(--surface); border-radius: 4px; margin-top: 10px; overflow: hidden; }
     .match-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
 
+    /* Mega Deep Search */
+    .mega-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 600px) { .mega-inputs { grid-template-columns: 1fr; } }
+    .mega-row { display: flex; flex-direction: column; gap: 3px; }
+    .mega-row label { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text2); }
+    .mega-row input {
+      padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--text); font-size: 0.88rem;
+    }
+    .mega-row input:focus { border-color: var(--accent); outline: none; }
+    .mega-profile-header {
+      display: flex; align-items: flex-start; gap: 20px; margin-bottom: 20px;
+    }
+    .mega-avatar {
+      width: 100px; height: 100px; border-radius: 16px; object-fit: cover;
+      border: 3px solid var(--accent); flex-shrink: 0; background: var(--surface);
+    }
+    .mega-profile-info { flex: 1; }
+    .mega-profile-info h2 { font-size: 1.5rem; margin: 0 0 4px; color: var(--text); }
+    .mega-profile-info .tagline { color: var(--text2); font-size: 0.88rem; margin-bottom: 10px; }
+    .mega-profile-info .bio { color: var(--text); font-size: 0.85rem; line-height: 1.5; }
+    .mega-stats {
+      display: flex; flex-wrap: wrap; gap: 16px; padding: 14px 0;
+      border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      margin: 14px 0;
+    }
+    .mega-stat { text-align: center; }
+    .mega-stat .val { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
+    .mega-stat .lbl { font-size: 0.7rem; color: var(--text2); text-transform: uppercase; }
+    .mega-account-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 0.84rem;
+    }
+    .mega-account-item:last-child { border-bottom: none; }
+    .mega-account-item img { width: 36px; height: 36px; border-radius: 8px; object-fit: cover; background: var(--surface); }
+    .mega-account-item .acct-info { flex: 1; min-width: 0; }
+    .mega-account-item .acct-platform { font-weight: 600; color: var(--text); }
+    .mega-account-item .acct-name { color: var(--text2); font-size: 0.78rem; }
+    .mega-account-item a { color: var(--accent2); text-decoration: none; font-size: 0.78rem; }
+    .mega-account-item .acct-meta { color: var(--text2); font-size: 0.72rem; }
+    .mega-photo-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px;
+    }
+    .mega-photo-grid img {
+      width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px;
+      cursor: pointer; border: 2px solid transparent; transition: border-color 0.2s;
+    }
+    .mega-photo-grid img:hover { border-color: var(--accent); }
+    .mega-detail-item {
+      padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-size: 0.84rem;
+    }
+    .mega-detail-item .dl { color: var(--text2); font-size: 0.72rem; text-transform: uppercase; }
+    .mega-detail-item .dv { color: var(--text); }
+
     @media (max-width: 480px) {
       .header h1 { font-size: 1.6rem; }
       .search-box { flex-direction: column; }
       .results { grid-template-columns: 1fr; }
+      .mega-profile-header { flex-direction: column; align-items: center; text-align: center; }
     }
   </style>
 </head>
@@ -303,6 +359,7 @@
     <button class="tab-btn active" onclick="switchTab('text')">Text Search</button>
     <button class="tab-btn" onclick="switchTab('image')">Image Search</button>
     <button class="tab-btn" onclick="switchTab('compare')">Face Compare</button>
+    <button class="tab-btn" onclick="switchTab('mega')">Mega Deep Search</button>
   </div>
 
   <!-- TAB 1: TEXT SEARCH -->
@@ -411,6 +468,123 @@
     </div>
   </div>
 
+  <!-- TAB 4: MEGA DEEP SEARCH -->
+  <div id="tab-mega" class="tab-content">
+    <div class="img-container">
+      <div class="panel-card">
+        <h3>Mega Deep Search</h3>
+        <p style="font-size:0.82rem;color:var(--text2);margin-bottom:16px">
+          Enter any accounts/usernames you know about a person. The system will pull every bit of public data,
+          cross-reference accounts, discover linked profiles, scrape bios/photos/activity, and build a complete dossier.
+          Takes as long as it needs — thoroughness over speed.
+        </p>
+
+        <div class="mega-inputs">
+          <div class="mega-row">
+            <label>Real Name</label>
+            <input type="text" id="megaName" placeholder="John Smith" />
+          </div>
+          <div class="mega-row">
+            <label>Primary Username</label>
+            <input type="text" id="megaUsername" placeholder="@johnsmith or johnsmith" />
+          </div>
+          <div class="mega-row">
+            <label>Email</label>
+            <input type="text" id="megaEmail" placeholder="john@example.com" />
+          </div>
+          <div class="mega-row">
+            <label>Instagram</label>
+            <input type="text" id="megaInstagram" placeholder="username or URL" />
+          </div>
+          <div class="mega-row">
+            <label>Discord</label>
+            <input type="text" id="megaDiscord" placeholder="username#1234 or username" />
+          </div>
+          <div class="mega-row">
+            <label>Roblox</label>
+            <input type="text" id="megaRoblox" placeholder="username or profile URL" />
+          </div>
+          <div class="mega-row">
+            <label>Twitter / X</label>
+            <input type="text" id="megaTwitter" placeholder="username or URL" />
+          </div>
+          <div class="mega-row">
+            <label>TikTok</label>
+            <input type="text" id="megaTikTok" placeholder="username or URL" />
+          </div>
+          <div class="mega-row">
+            <label>YouTube</label>
+            <input type="text" id="megaYouTube" placeholder="channel name or URL" />
+          </div>
+          <div class="mega-row">
+            <label>GitHub</label>
+            <input type="text" id="megaGitHub" placeholder="username" />
+          </div>
+          <div class="mega-row">
+            <label>Steam</label>
+            <input type="text" id="megaSteam" placeholder="username or profile URL" />
+          </div>
+          <div class="mega-row">
+            <label>Other / Notes</label>
+            <input type="text" id="megaOther" placeholder="Any other usernames, URLs, or info..." />
+          </div>
+        </div>
+
+        <button class="btn" id="megaSearchBtn" onclick="doMegaSearch()" style="width:100%;margin-top:16px;padding:14px;font-size:1rem">
+          Launch Mega Deep Search
+        </button>
+      </div>
+
+      <!-- Results area -->
+      <div id="megaStatus" class="status hidden"></div>
+
+      <!-- Profile card -->
+      <div id="megaProfile" class="hidden" style="margin-top:20px">
+        <div class="panel-card" id="megaProfileCard"></div>
+      </div>
+
+      <!-- Linked accounts -->
+      <div id="megaAccounts" class="hidden" style="margin-top:16px">
+        <div class="panel-card">
+          <h3>Linked Accounts & Profiles</h3>
+          <div id="megaAccountsList"></div>
+        </div>
+      </div>
+
+      <!-- Photos -->
+      <div id="megaPhotos" class="hidden" style="margin-top:16px">
+        <div class="panel-card">
+          <h3>Photos Found</h3>
+          <div id="megaPhotoGrid" class="mega-photo-grid"></div>
+        </div>
+      </div>
+
+      <!-- Activity / Details -->
+      <div id="megaDetails" class="hidden" style="margin-top:16px">
+        <div class="panel-card">
+          <h3>Activity & Details</h3>
+          <div id="megaDetailsList"></div>
+        </div>
+      </div>
+
+      <!-- Web mentions -->
+      <div id="megaWeb" class="hidden" style="margin-top:16px">
+        <div class="panel-card">
+          <h3>Web Mentions</h3>
+          <div id="megaWebList"></div>
+        </div>
+      </div>
+
+      <!-- Raw data -->
+      <div id="megaRaw" class="hidden" style="margin-top:16px">
+        <div class="panel-card">
+          <h3>All Raw Data</h3>
+          <div id="megaRawList" class="results"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- face-api.js -->
   <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.js"></script>
   <script>
@@ -436,13 +610,9 @@
   //  TAB SWITCHING
   // ═══════════════════════════════════════════════════
   function switchTab(name) {
-    document.querySelectorAll(".tab-btn").forEach(b => {
-      const id = b.textContent.toLowerCase();
-      b.classList.toggle("active",
-        (name === "text" && id.includes("text")) ||
-        (name === "image" && id.includes("image")) ||
-        (name === "compare" && id.includes("compare"))
-      );
+    document.querySelectorAll(".tab-btn").forEach((b, i) => {
+      const map = ["text", "image", "compare", "mega"];
+      b.classList.toggle("active", map[i] === name);
     });
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     document.getElementById("tab-" + name).classList.add("active");
@@ -1021,6 +1191,261 @@
     } catch (err) {
       statusEl.innerHTML = '<span style="color:var(--danger)">Upload error: ' + escapeHtml(err.message) + '</span>';
     }
+  }
+
+  // ═══════════════════════════════════════════════════
+  //  MEGA DEEP SEARCH
+  // ═══════════════════════════════════════════════════
+
+  async function doMegaSearch() {
+    const btn = document.getElementById("megaSearchBtn");
+    const statusEl = document.getElementById("megaStatus");
+    const profileEl = document.getElementById("megaProfile");
+    const profileCard = document.getElementById("megaProfileCard");
+    const accountsEl = document.getElementById("megaAccounts");
+    const accountsList = document.getElementById("megaAccountsList");
+    const photosEl = document.getElementById("megaPhotos");
+    const photoGrid = document.getElementById("megaPhotoGrid");
+    const detailsEl = document.getElementById("megaDetails");
+    const detailsList = document.getElementById("megaDetailsList");
+    const webEl = document.getElementById("megaWeb");
+    const webList = document.getElementById("megaWebList");
+    const rawEl = document.getElementById("megaRaw");
+    const rawList = document.getElementById("megaRawList");
+
+    // Gather inputs
+    const inputs = {
+      name: document.getElementById("megaName").value,
+      username: document.getElementById("megaUsername").value,
+      email: document.getElementById("megaEmail").value,
+      instagram: document.getElementById("megaInstagram").value,
+      discord: document.getElementById("megaDiscord").value,
+      roblox: document.getElementById("megaRoblox").value,
+      twitter: document.getElementById("megaTwitter").value,
+      tiktok: document.getElementById("megaTikTok").value,
+      youtube: document.getElementById("megaYouTube").value,
+      github: document.getElementById("megaGitHub").value,
+      steam: document.getElementById("megaSteam").value,
+      other: document.getElementById("megaOther").value,
+    };
+
+    const hasAny = Object.values(inputs).some(v => v.trim());
+    if (!hasAny) return;
+
+    // Reset UI
+    btn.disabled = true;
+    btn.textContent = "Searching...";
+    statusEl.classList.remove("hidden");
+    statusEl.innerHTML = '<span class="spinner"></span> Starting mega deep search...';
+    profileEl.classList.add("hidden"); accountsEl.classList.add("hidden");
+    photosEl.classList.add("hidden"); detailsEl.classList.add("hidden");
+    webEl.classList.add("hidden"); rawEl.classList.add("hidden");
+    profileCard.innerHTML = ""; accountsList.innerHTML = ""; photoGrid.innerHTML = "";
+    detailsList.innerHTML = ""; webList.innerHTML = ""; rawList.innerHTML = "";
+
+    let scrapeCount = 0;
+    let apiCount = 0;
+
+    try {
+      const response = await fetch("/api/mega-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(inputs),
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEvent = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ") && currentEvent) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              if (currentEvent === "phase") {
+                statusEl.innerHTML = '<span class="spinner"></span> Phase ' + data.phase + '/7: ' + escapeHtml(data.label);
+              }
+
+              if (currentEvent === "scrape_result") {
+                scrapeCount++;
+                statusEl.innerHTML = '<span class="spinner"></span> Scraped ' + escapeHtml(data.platform) +
+                  (data.has_avatar ? ' (got avatar)' : '') + ' — ' + scrapeCount + ' platforms done...';
+              }
+
+              if (currentEvent === "api_result") {
+                apiCount++;
+              }
+
+              if (currentEvent === "username_check") {
+                statusEl.innerHTML = '<span class="spinner"></span> @' + escapeHtml(data.username) +
+                  ': found on ' + data.found + '/' + data.total + ' platforms';
+              }
+
+              if (currentEvent === "error") {
+                statusEl.innerHTML = '<span style="color:var(--danger)">' + escapeHtml(data.message) + '</span>';
+                btn.disabled = false; btn.textContent = "Launch Mega Deep Search";
+                return;
+              }
+
+              if (currentEvent === "complete") {
+                statusEl.classList.add("hidden");
+                btn.disabled = false;
+                btn.textContent = "Launch Mega Deep Search";
+                renderMegaProfile(data, profileEl, profileCard, accountsEl, accountsList,
+                  photosEl, photoGrid, detailsEl, detailsList, webEl, webList, rawEl, rawList);
+              }
+            } catch {}
+            currentEvent = null;
+          }
+        }
+      }
+    } catch (err) {
+      statusEl.innerHTML = '<span style="color:var(--danger)">Error: ' + escapeHtml(err.message) + '</span>';
+      btn.disabled = false; btn.textContent = "Launch Mega Deep Search";
+    }
+  }
+
+  function renderMegaProfile(data, profileEl, profileCard, accountsEl, accountsList,
+    photosEl, photoGrid, detailsEl, detailsList, webEl, webList, rawEl, rawList) {
+
+    const p = data.profile || {};
+    const platformColors = {
+      "Instagram": "#E4405F", "Twitter/X": "#1DA1F2", "Facebook": "#1877F2",
+      "LinkedIn": "#0A66C2", "TikTok": "#69C9D0", "YouTube": "#FF0000",
+      "Pinterest": "#BD081C", "Reddit": "#FF4500", "Tumblr": "#36465D",
+      "VK": "#4680C2", "GitHub": "#6e5494", "Wikipedia": "#636466",
+      "IMDb": "#F5C518", "Flickr": "#0063DC", "DeviantArt": "#05CC47",
+      "Twitch": "#9146FF", "Mastodon": "#6364FF", "Medium": "#00ab6c",
+      "Spotify": "#1DB954", "SoundCloud": "#FF5500", "Behance": "#1769FF",
+      "Dribbble": "#EA4C89", "Steam": "#1b2838", "Roblox": "#e2231a",
+      "Patreon": "#FF424D", "Discord": "#5865F2", "Threads": "#000",
+      "Bluesky": "#0085FF", "Snapchat": "#FFFC00", "500px": "#0099e5",
+      "Stack Overflow": "#F48024", "Hacker News": "#ff6600", "GitLab": "#fc6d26",
+      "Keybase": "#33a0ff", "Gravatar": "#1e8cbe", "Docker Hub": "#2496ED",
+      "DEV.to": "#0a0a0a", "Lichess": "#000", "Chess.com": "#769656",
+      "People Search": "#6c5ce7", "Web": "#888",
+    };
+
+    // ── Profile card ──
+    profileEl.classList.remove("hidden");
+    let cardHtml = '<div class="mega-profile-header">';
+    if (p.avatar) {
+      cardHtml += '<img class="mega-avatar" src="/api/proxy-image?url=' + encodeURIComponent(p.avatar) + '" onerror="this.style.display=\'none\'" />';
+    }
+    cardHtml += '<div class="mega-profile-info">';
+    cardHtml += '<h2>' + escapeHtml(p.name || "Unknown Person") + '</h2>';
+    const tagParts = [];
+    if (p.location) tagParts.push(escapeHtml(p.location));
+    if (p.created) tagParts.push('Active since ' + new Date(p.created).getFullYear());
+    if (tagParts.length) cardHtml += '<div class="tagline">' + tagParts.join(' &bull; ') + '</div>';
+    if (p.bio) cardHtml += '<div class="bio">' + escapeHtml(p.bio.slice(0, 500)) + '</div>';
+    if (p.emails?.length) {
+      cardHtml += '<div style="margin-top:8px;font-size:0.82rem;color:var(--accent2)">Emails: ' + p.emails.map(e => escapeHtml(e)).join(', ') + '</div>';
+    }
+    cardHtml += '</div></div>';
+
+    // Stats
+    const statEntries = Object.entries(p.stats || {});
+    if (statEntries.length) {
+      cardHtml += '<div class="mega-stats">';
+      for (const [label, val] of statEntries.slice(0, 12)) {
+        cardHtml += '<div class="mega-stat"><div class="val">' + escapeHtml(String(val)) + '</div><div class="lbl">' + escapeHtml(label) + '</div></div>';
+      }
+      cardHtml += '</div>';
+    }
+
+    // Summary line
+    cardHtml += '<div style="font-size:0.82rem;color:var(--text2);margin-top:10px">' +
+      '<strong>' + data.total_accounts + '</strong> linked accounts found &bull; ' +
+      '<strong>' + data.total_details + '</strong> data points &bull; ' +
+      '<strong>' + (data.photos?.length || 0) + '</strong> photos &bull; ' +
+      '<strong>' + (data.web_mentions?.length || 0) + '</strong> web mentions</div>';
+
+    profileCard.innerHTML = cardHtml;
+
+    // ── Accounts ──
+    if (data.accounts?.length) {
+      accountsEl.classList.remove("hidden");
+      let accHtml = '';
+      // Sort by platform
+      const sorted = [...data.accounts].sort((a, b) => (a.platform || "").localeCompare(b.platform || ""));
+      for (const acc of sorted) {
+        const color = platformColors[acc.platform] || "var(--accent)";
+        const avatarImg = acc.avatar
+          ? '<img src="/api/proxy-image?url=' + encodeURIComponent(acc.avatar) + '" onerror="this.style.display=\'none\'" />'
+          : '<div style="width:36px;height:36px;border-radius:8px;background:' + color + ';display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:0.8rem">' + escapeHtml((acc.platform || "?")[0]) + '</div>';
+
+        accHtml += '<div class="mega-account-item">' + avatarImg +
+          '<div class="acct-info">' +
+            '<div class="acct-platform"><span style="color:' + color + '">' + escapeHtml(acc.platform || "Unknown") + '</span>' +
+            (acc.username ? ' &mdash; @' + escapeHtml(acc.username) : '') + '</div>' +
+            (acc.url ? '<a href="' + escapeHtml(acc.url) + '" target="_blank">' + escapeHtml(acc.url.slice(0, 60)) + '</a>' : '') +
+            (acc.data?.snippet ? '<div class="acct-meta">' + escapeHtml(acc.data.snippet.slice(0, 120)) + '</div>' : '') +
+            (acc.data?.title ? '<div class="acct-meta">' + escapeHtml(acc.data.title.slice(0, 120)) + '</div>' : '') +
+          '</div></div>';
+      }
+      accountsList.innerHTML = accHtml;
+    }
+
+    // ── Photos ──
+    if (data.photos?.length) {
+      photosEl.classList.remove("hidden");
+      let imgHtml = '';
+      for (const photo of data.photos) {
+        imgHtml += '<img src="/api/proxy-image?url=' + encodeURIComponent(photo) + '" onerror="this.remove()" onclick="window.open(\'' + escapeHtml(photo) + '\',\'_blank\')" />';
+      }
+      photoGrid.innerHTML = imgHtml;
+    }
+
+    // ── Details ──
+    if (data.details?.length) {
+      detailsEl.classList.remove("hidden");
+      let detHtml = '';
+      for (const d of data.details) {
+        detHtml += '<div class="mega-detail-item">' +
+          '<div class="dl">' + escapeHtml(d.platform) + ' — ' + escapeHtml(d.key) + '</div>' +
+          '<div class="dv">' + escapeHtml(String(d.value).slice(0, 500)) + '</div>' +
+          '</div>';
+      }
+      detailsList.innerHTML = detHtml;
+    }
+
+    // ── Web mentions ──
+    if (data.web_mentions?.length) {
+      webEl.classList.remove("hidden");
+      let webHtml = '';
+      for (const w of data.web_mentions) {
+        webHtml += '<div class="mega-detail-item">' +
+          '<div class="dl">' + escapeHtml(w.platform || "Web") + '</div>' +
+          '<div class="dv"><a href="' + escapeHtml(w.url) + '" target="_blank" style="color:var(--accent2)">' + escapeHtml(w.title || w.url) + '</a></div>' +
+          (w.snippet ? '<div style="font-size:0.78rem;color:var(--text2)">' + escapeHtml(w.snippet.slice(0, 200)) + '</div>' : '') +
+          '</div>';
+      }
+      webList.innerHTML = webHtml;
+    }
+
+    // ── Raw data (collapsible) ──
+    rawEl.classList.remove("hidden");
+    let rawHtml = '<div style="font-size:0.78rem;color:var(--text2);margin-bottom:8px">All ' + data.total_accounts + ' accounts and ' + data.total_details + ' data points collected during search:</div>';
+    for (const acc of data.accounts || []) {
+      const color = platformColors[acc.platform] || "var(--accent)";
+      rawHtml += renderCard({
+        source: acc.platform, profile_url: acc.url,
+        name: acc.username || acc.data?.name || acc.platform,
+        avatar: acc.avatar, ...acc.data,
+      });
+    }
+    rawList.innerHTML = rawHtml;
   }
 
   // ── EXIF Reader ───────────────────────────────────
