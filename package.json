@@ -1,0 +1,13 @@
+{
+  "name": "person-lookup",
+  "version": "1.0.0",
+  "description": "Educational person lookup tool using public APIs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

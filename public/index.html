@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Person Lookup - Educational OSINT Tool</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #181b24;
+      --card: #1e2230;
+      --border: #2a2f3e;
+      --accent: #6c5ce7;
+      --accent2: #00cec9;
+      --text: #e4e6eb;
+      --text2: #8b8fa3;
+      --danger: #e74c3c;
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .header {
+      text-align: center;
+      padding: 48px 20px 24px;
+    }
+
+    .header h1 {
+      font-size: 2.2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .header p {
+      color: var(--text2);
+      margin-top: 8px;
+      font-size: 0.95rem;
+    }
+
+    .disclaimer {
+      max-width: 640px;
+      margin: 0 auto 24px;
+      padding: 12px 20px;
+      background: rgba(231, 76, 60, 0.1);
+      border: 1px solid rgba(231, 76, 60, 0.25);
+      border-radius: var(--radius);
+      color: #f5a6a0;
+      font-size: 0.82rem;
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    .search-box {
+      max-width: 640px;
+      margin: 0 auto 40px;
+      padding: 0 20px;
+      display: flex;
+      gap: 10px;
+    }
+
+    .search-box input {
+      flex: 1;
+      padding: 14px 20px;
+      font-size: 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .search-box input:focus {
+      border-color: var(--accent);
+    }
+
+    .search-box input::placeholder {
+      color: var(--text2);
+    }
+
+    .search-box button {
+      padding: 14px 28px;
+      font-size: 1rem;
+      font-weight: 600;
+      background: linear-gradient(135deg, var(--accent), #7c6cf0);
+      color: white;
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+      white-space: nowrap;
+    }
+
+    .search-box button:hover { opacity: 0.9; }
+    .search-box button:active { transform: scale(0.97); }
+    .search-box button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .status {
+      text-align: center;
+      color: var(--text2);
+      padding: 20px;
+      font-size: 0.95rem;
+    }
+
+    .status.error { color: var(--danger); }
+
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .results-header {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 20px 12px;
+      color: var(--text2);
+      font-size: 0.9rem;
+    }
+
+    .results-header strong { color: var(--text); }
+
+    .results {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 20px 60px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      transition: border-color 0.2s;
+    }
+
+    .card:hover {
+      border-color: var(--accent);
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .card-head .avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--surface);
+    }
+
+    .card-head .source-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(108, 92, 231, 0.15);
+      color: var(--accent);
+    }
+
+    .card-head .name {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    .card-head .info { flex: 1; }
+
+    .card-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .card-field {
+      display: flex;
+      gap: 8px;
+      font-size: 0.87rem;
+      line-height: 1.5;
+    }
+
+    .card-field .label {
+      color: var(--text2);
+      min-width: 90px;
+      flex-shrink: 0;
+    }
+
+    .card-field .value {
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    .card-field a {
+      color: var(--accent2);
+      text-decoration: none;
+    }
+
+    .card-field a:hover {
+      text-decoration: underline;
+    }
+
+    .extract {
+      font-size: 0.85rem;
+      line-height: 1.6;
+      color: var(--text2);
+      margin-top: 8px;
+      display: -webkit-box;
+      -webkit-line-clamp: 4;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text2);
+    }
+
+    .empty-state .icon { font-size: 3rem; margin-bottom: 16px; }
+
+    .tips {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 0 20px 40px;
+    }
+
+    .tips h3 {
+      color: var(--text2);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+
+    .tips ul {
+      list-style: none;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .tips li {
+      padding: 6px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      font-size: 0.82rem;
+      color: var(--text2);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tips li:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    @media (max-width: 480px) {
+      .header h1 { font-size: 1.6rem; }
+      .search-box { flex-direction: column; }
+      .results { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Person Lookup</h1>
+    <p>Search public information by name, username, or email</p>
+  </div>
+
+  <div class="disclaimer">
+    <strong>Educational Use Only.</strong> This tool queries publicly available APIs only.
+    No private data is accessed. Always respect privacy and use responsibly.
+    Do not use for harassment, stalking, or any malicious purpose.
+  </div>
+
+  <div class="search-box">
+    <input
+      type="text"
+      id="query"
+      placeholder="Enter a name, username, or email..."
+      autocomplete="off"
+      maxlength="100"
+    />
+    <button id="searchBtn" onclick="doSearch()">Search</button>
+  </div>
+
+  <div class="tips" id="tips">
+    <h3>Try searching for</h3>
+    <ul>
+      <li onclick="tryQuery('torvalds')">torvalds</li>
+      <li onclick="tryQuery('Elon Musk')">Elon Musk</li>
+      <li onclick="tryQuery('defunkt')">defunkt</li>
+      <li onclick="tryQuery('Albert Einstein')">Albert Einstein</li>
+      <li onclick="tryQuery('gvanrossum')">gvanrossum</li>
+    </ul>
+  </div>
+
+  <div id="status" class="status" style="display:none"></div>
+  <div id="resultsHeader" class="results-header" style="display:none"></div>
+  <div id="results" class="results"></div>
+
+  <script>
+    const input = document.getElementById("query");
+    const btn = document.getElementById("searchBtn");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+    const headerEl = document.getElementById("resultsHeader");
+    const tipsEl = document.getElementById("tips");
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doSearch();
+    });
+
+    function tryQuery(q) {
+      input.value = q;
+      doSearch();
+    }
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      const d = document.createElement("div");
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    async function doSearch() {
+      const query = input.value.trim();
+      if (!query) return;
+
+      btn.disabled = true;
+      tipsEl.style.display = "none";
+      resultsEl.innerHTML = "";
+      headerEl.style.display = "none";
+      statusEl.style.display = "block";
+      statusEl.className = "status";
+      statusEl.innerHTML = '<span class="spinner"></span> Searching public sources...';
+
+      try {
+        const res = await fetch("/api/lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          statusEl.className = "status error";
+          statusEl.textContent = data.error || "Something went wrong";
+          btn.disabled = false;
+          return;
+        }
+
+        statusEl.style.display = "none";
+
+        if (data.results.length === 0) {
+          resultsEl.innerHTML = `
+            <div class="empty-state" style="grid-column: 1/-1">
+              <div class="icon">&#128269;</div>
+              <p>No public information found for "<strong>${escapeHtml(query)}</strong>"</p>
+              <p style="margin-top:8px;font-size:0.85rem">Try a different spelling or a known username</p>
+            </div>`;
+          btn.disabled = false;
+          return;
+        }
+
+        headerEl.style.display = "block";
+        headerEl.innerHTML = `Found <strong>${data.results.length}</strong> result${data.results.length !== 1 ? "s" : ""} across public sources for "<strong>${escapeHtml(data.query)}</strong>"`;
+
+        for (const r of data.results) {
+          resultsEl.innerHTML += renderCard(r);
+        }
+      } catch (err) {
+        statusEl.className = "status error";
+        statusEl.textContent = "Network error. Is the server running?";
+      }
+
+      btn.disabled = false;
+    }
+
+    function renderCard(r) {
+      const avatar = r.avatar || r.thumbnail
+        ? `<img class="avatar" src="${escapeHtml(r.avatar || r.thumbnail)}" alt="" />`
+        : `<div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;color:var(--text2)">${escapeHtml((r.name || r.source || "?")[0])}</div>`;
+
+      let fields = "";
+
+      const skip = new Set(["source", "icon", "avatar", "thumbnail", "profile_url", "name", "extract", "exists"]);
+      for (const [key, val] of Object.entries(r)) {
+        if (skip.has(key) || val === null || val === undefined || val === "") continue;
+
+        const label = key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        let display;
+
+        if (typeof val === "string" && val.startsWith("http")) {
+          display = `<a href="${escapeHtml(val)}" target="_blank" rel="noopener">${escapeHtml(val)}</a>`;
+        } else if (Array.isArray(val)) {
+          if (val.length === 0) continue;
+          display = escapeHtml(JSON.stringify(val, null, 0).slice(0, 200));
+        } else if (typeof val === "boolean") {
+          display = val ? "Yes" : "No";
+        } else if (typeof val === "string" && val.match(/^\d{4}-\d{2}-\d{2}/)) {
+          display = escapeHtml(new Date(val).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }));
+        } else if (typeof val === "number") {
+          display = val.toLocaleString();
+        } else {
+          display = escapeHtml(String(val));
+        }
+
+        fields += `<div class="card-field"><span class="label">${escapeHtml(label)}</span><span class="value">${display}</span></div>`;
+      }
+
+      const extract = r.extract
+        ? `<div class="extract">${escapeHtml(r.extract)}</div>`
+        : "";
+
+      const link = r.profile_url
+        ? `<a href="${escapeHtml(r.profile_url)}" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none;font-size:0.78rem">View Profile &rarr;</a>`
+        : "";
+
+      return `
+        <div class="card">
+          <div class="card-head">
+            ${avatar}
+            <div class="info">
+              <span class="source-badge">${escapeHtml(r.source)}</span>
+              <div class="name">${escapeHtml(r.name || "Unknown")}</div>
+            </div>
+          </div>
+          <div class="card-fields">${fields}</div>
+          ${extract}
+          <div style="margin-top:12px">${link}</div>
+        </div>`;
+    }
+  </script>
+</body>
+</html>
