@@ -318,9 +318,17 @@
           </div>
           <div class="info-panel">
             <div class="panel-card">
-              <h3>Face Detection</h3>
+              <h3>Face Detection &amp; Identification</h3>
               <div id="faceStatus" class="status" style="padding:8px 0">Analyzing...</div>
               <div id="faceResults" class="face-chips"></div>
+              <div id="identifyPanel" class="hidden" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+                <div style="font-size:0.82rem;color:var(--text2);margin-bottom:8px">
+                  <strong style="color:var(--accent)">Identify this person:</strong>
+                  Search engines (especially Google &amp; Yandex) can often identify who someone is from their face.
+                  Click below to search with just the cropped face.
+                </div>
+                <div id="identifyButtons" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+              </div>
             </div>
             <div class="panel-card">
               <h3>Image Metadata</h3>
@@ -552,7 +560,27 @@
     return { source: "GitHub", profile_url: data.html_url, avatar: data.avatar_url,
       name: data.name, bio: data.bio, location: data.location, company: data.company,
       blog: data.blog, public_repos: data.public_repos, followers: data.followers,
-      following: data.following, created: data.created_at };
+      following: data.following, twitter_username: data.twitter_username, created: data.created_at };
+  }
+
+  // ── GitHub commit email mining (emails in public commits are public) ──
+  async function lookupGitHubEmails(username) {
+    const events = await safeFetch("https://api.github.com/users/" + encodeURIComponent(username) + "/events/public?per_page=30");
+    if (!events || !events.length) return null;
+    const emails = new Set();
+    for (const ev of events) {
+      if (ev.type === "PushEvent" && ev.payload?.commits) {
+        for (const c of ev.payload.commits) {
+          if (c.author?.email && !c.author.email.includes("noreply") && !c.author.email.includes("users.noreply")) {
+            emails.add(c.author.email);
+          }
+        }
+      }
+    }
+    if (!emails.size) return null;
+    return { source: "GitHub Commit Emails", name: username + "'s Commit Emails",
+      emails_found: [...emails].join(", "),
+      note: "Extracted from public git commits — many people don't realize this is visible" };
   }
 
   async function lookupGitHubByName(name) {
@@ -888,6 +916,7 @@
       if (s.includes("GitHub Repos")) { score += 5; factors.push("Public repos reveal tech stack"); }
       if (s.includes("GitHub Activity")) { score += 8; factors.push("Activity patterns reveal timezone/schedule"); }
       if (s.includes("GitHub Gists")) { score += 5; factors.push("Public gists may contain sensitive snippets"); }
+      if (s.includes("Commit Emails")) { score += 15; factors.push("Real email address exposed in git commits"); }
       if (s.includes("WHOIS")) { score += 12; factors.push("Domain WHOIS data available"); }
       if (s.includes("IP Geo")) { score += 8; factors.push("Server geolocation exposed"); }
       if (s.includes("Wayback")) { score += 5; factors.push("Archived web content exists"); }
@@ -983,6 +1012,7 @@
         analysisTasks.push(lookupGitHubRepos(sanitized));
         analysisTasks.push(lookupGitHubGists(sanitized));
         analysisTasks.push(lookupGitHubEvents(sanitized));
+        analysisTasks.push(lookupGitHubEmails(sanitized));
       }
       analysisTasks.push(lookupBreaches(sanitized));
     }
@@ -1147,10 +1177,18 @@
 
   // ── Face Detection ────────────────────────────────
 
+  // Store face crops as File objects for reverse search
+  let faceCrops = []; // Array of { file: File, dataUrl: string, index: number }
+
   async function detectFaces(file) {
     const faceStatus = document.getElementById("faceStatus");
     const faceResults = document.getElementById("faceResults");
+    const identifyPanel = document.getElementById("identifyPanel");
+    const identifyButtons = document.getElementById("identifyButtons");
     faceResults.innerHTML = "";
+    identifyButtons.innerHTML = "";
+    identifyPanel.classList.add("hidden");
+    faceCrops = [];
 
     if (!modelsLoaded) {
       faceStatus.textContent = "Waiting for models to load...";
@@ -1186,7 +1224,8 @@
     const scaleX = displayW / img.naturalWidth;
     const scaleY = displayH / img.naturalHeight;
 
-    detections.forEach((det, i) => {
+    for (let i = 0; i < detections.length; i++) {
+      const det = detections[i];
       const box = det.detection.box;
       const x = box.x * scaleX, y = box.y * scaleY;
       const w = box.width * scaleX, h = box.height * scaleY;
@@ -1209,23 +1248,90 @@
       const genderProb = (det.genderProbability * 100).toFixed(0);
       const expression = getExpressionLabel(det.expressions);
 
-      // Crop face
+      // Crop face with generous padding for better search results
       const cropCanvas = document.createElement("canvas");
-      const pad = 20;
-      const cx = Math.max(0, box.x - pad), cy = Math.max(0, box.y - pad);
-      const cw = Math.min(img.naturalWidth - cx, box.width + pad * 2);
-      const ch = Math.min(img.naturalHeight - cy, box.height + pad * 2);
+      const padX = box.width * 0.6;  // 60% padding for head + shoulders
+      const padY = box.height * 0.8;
+      const cx = Math.max(0, box.x - padX);
+      const cy = Math.max(0, box.y - padY);
+      const cw = Math.min(img.naturalWidth - cx, box.width + padX * 2);
+      const ch = Math.min(img.naturalHeight - cy, box.height + padY * 2);
       cropCanvas.width = cw; cropCanvas.height = ch;
       cropCanvas.getContext("2d").drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
 
+      const dataUrl = cropCanvas.toDataURL("image/jpeg", 0.92);
+
+      // Convert canvas to File for form submission
+      const blob = await new Promise(r => cropCanvas.toBlob(r, "image/jpeg", 0.92));
+      const faceFile = new File([blob], "face_" + (i+1) + ".jpg", { type: "image/jpeg" });
+      faceCrops.push({ file: faceFile, dataUrl, index: i });
+
       faceResults.innerHTML += '<div class="face-chip">' +
-        '<img src="' + cropCanvas.toDataURL() + '" alt="Face ' + (i+1) + '" />' +
+        '<img src="' + dataUrl + '" alt="Face ' + (i+1) + '" />' +
         '<div class="details">' +
           '<div class="primary">Face ' + (i+1) + ' &mdash; ~' + age + 'y, ' + gender + ' (' + genderProb + '%)</div>' +
           '<div class="secondary">' + expression + '</div>' +
-          '<div class="secondary">128-dim descriptor stored</div>' +
+          '<div class="secondary" style="margin-top:4px">' +
+            '<button onclick="identifyFace(' + i + ',\'google\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-right:4px">Google</button>' +
+            '<button onclick="identifyFace(' + i + ',\'yandex\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem;margin-right:4px">Yandex</button>' +
+            '<button onclick="identifyFace(' + i + ',\'bing\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent2);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem">Bing</button>' +
+          '</div>' +
         '</div></div>';
-    });
+    }
+
+    // Show identify panel
+    if (faceCrops.length > 0) {
+      identifyPanel.classList.remove("hidden");
+      let btnsHtml = '';
+      faceCrops.forEach((fc, idx) => {
+        btnsHtml += '<button class="btn btn-sm btn-green" onclick="identifyFaceAll(' + idx + ')" style="font-size:0.8rem">' +
+          'Identify Face ' + (idx + 1) + ' (All Engines)</button>';
+      });
+      identifyButtons.innerHTML = btnsHtml;
+    }
+  }
+
+  // Search a specific face crop on a search engine
+  function identifyFace(faceIndex, engine) {
+    if (!faceCrops[faceIndex]) return;
+    const faceFile = faceCrops[faceIndex].file;
+    const form = document.createElement("form");
+    form.method = "POST"; form.enctype = "multipart/form-data";
+    form.target = "_blank"; form.style.display = "none";
+    const fi = document.createElement("input"); fi.type = "file";
+    const dt = new DataTransfer(); dt.items.add(faceFile);
+    switch (engine) {
+      case "google":
+        form.action = "https://www.google.com/searchbyimage/upload";
+        fi.name = "encoded_image"; fi.files = dt.files; form.appendChild(fi);
+        addHidden(form, "image_url", ""); addHidden(form, "sbisrc", "cr_1");
+        break;
+      case "yandex":
+        form.action = "https://yandex.com/images/search";
+        fi.name = "upfile"; fi.files = dt.files; form.appendChild(fi);
+        addHidden(form, "rpt", "imageview");
+        break;
+      case "bing":
+        form.action = "https://www.bing.com/images/search?view=detailv2&iss=sbiupload&FORM=SBIHMP";
+        fi.name = "imageBin"; fi.files = dt.files; form.appendChild(fi);
+        break;
+      case "tineye":
+        form.action = "https://tineye.com/search";
+        fi.name = "image"; fi.files = dt.files; form.appendChild(fi);
+        break;
+    }
+    document.body.appendChild(form); form.submit(); document.body.removeChild(form);
+  }
+
+  // Search all engines with a specific face crop
+  function identifyFaceAll(faceIndex) {
+    const engines = ["google", "yandex", "bing", "tineye"];
+    let i = 0;
+    (function next() {
+      if (i >= engines.length) return;
+      identifyFace(faceIndex, engines[i]); i++;
+      setTimeout(next, 800);
+    })();
   }
 
   // ── EXIF Reader ───────────────────────────────────
