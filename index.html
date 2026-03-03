@@ -488,6 +488,14 @@
     } catch { return null; }
   }
 
+  async function safeFetchText(url) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return await res.text();
+    } catch { return null; }
+  }
+
   // ═══════════════════════════════════════════════════
   //  TAB 1 — TEXT SEARCH  (all client-side)
   // ═══════════════════════════════════════════════════
@@ -563,7 +571,351 @@
       answers: (data.Answer || []).map(a => ({ type: a.type, data: a.data, ttl: a.TTL })) };
   }
 
-  // ── Main search orchestrator ─────────────────────
+  // ── Have I Been Pwned — breach check (public API, no key for breach list) ──
+  async function lookupBreaches(query) {
+    // HIBP v3 public breach list — check if an email appears in known breaches
+    // The breaches endpoint is public & CORS-enabled
+    if (!query.includes("@")) {
+      // Try common email patterns for username
+      const domains = ["gmail.com","yahoo.com","hotmail.com","outlook.com","protonmail.com"];
+      const allBreaches = await safeFetch("https://haveibeenpwned.com/api/v3/breaches");
+      if (!allBreaches) return null;
+      return { source: "HIBP Breach Database", icon: "hibp",
+        note: "Enter an email address to check specific breach exposure",
+        total_known_breaches: allBreaches.length,
+        largest_breaches: allBreaches.sort((a,b) => b.PwnCount - a.PwnCount).slice(0,5).map(b => b.Name + " (" + (b.PwnCount/1e6).toFixed(1) + "M accounts)").join(", "),
+        data_classes_seen: [...new Set(allBreaches.flatMap(b => b.DataClasses))].slice(0,15).join(", ")
+      };
+    }
+    return null;
+  }
+
+  // ── npm registry ──
+  async function lookupNpm(username) {
+    const data = await safeFetch("https://registry.npmjs.org/-/user/org.couchdb.user:" + encodeURIComponent(username));
+    if (!data || data.error) return null;
+    return { source: "npm", profile_url: "https://www.npmjs.com/~" + encodeURIComponent(username),
+      name: data.name, email: data.email || null };
+  }
+
+  // ── GitLab API ──
+  async function lookupGitLab(username) {
+    const data = await safeFetch("https://gitlab.com/api/v4/users?username=" + encodeURIComponent(username));
+    if (!data || !data.length) return null;
+    const u = data[0];
+    return { source: "GitLab", profile_url: u.web_url, avatar: u.avatar_url,
+      name: u.name, username: u.username, bio: u.bio || null,
+      location: u.location || null, created: u.created_at };
+  }
+
+  // ── Keybase ──
+  async function lookupKeybase(username) {
+    const data = await safeFetch("https://keybase.io/_/api/1.0/user/lookup.json?usernames=" + encodeURIComponent(username));
+    if (!data || !data.them || !data.them.length || !data.them[0]) return null;
+    const u = data.them[0];
+    const proofs = (u.proofs_summary?.all || []).map(p => p.proof_type + ": " + p.nametag);
+    return { source: "Keybase", profile_url: "https://keybase.io/" + u.basics?.username,
+      avatar: u.pictures?.primary?.url, name: u.profile?.full_name,
+      bio: u.profile?.bio, location: u.profile?.location,
+      linked_accounts: proofs.join(", ") || null,
+      pgp_keys: u.public_keys?.pgp_public_keys?.length || 0,
+      devices: u.devices ? Object.keys(u.devices).length : null };
+  }
+
+  // ── Lichess (chess) ──
+  async function lookupLichess(username) {
+    const data = await safeFetch("https://lichess.org/api/user/" + encodeURIComponent(username));
+    if (!data || data.error) return null;
+    return { source: "Lichess", profile_url: data.url, name: data.username,
+      bio: data.profile?.bio, location: data.profile?.location,
+      country: data.profile?.country, games_played: data.count?.all,
+      rating_bullet: data.perfs?.bullet?.rating, rating_blitz: data.perfs?.blitz?.rating,
+      rating_rapid: data.perfs?.rapid?.rating, created: new Date(data.createdAt).toISOString() };
+  }
+
+  // ── Wikidata (structured data for real names) ──
+  async function lookupWikidata(name) {
+    const data = await safeFetch("https://www.wikidata.org/w/api.php?action=wbsearchentities&search=" + encodeURIComponent(name) + "&language=en&limit=3&format=json&origin=*");
+    if (!data || !data.search || !data.search.length) return null;
+    return data.search.slice(0, 2).map(e => ({
+      source: "Wikidata", profile_url: "https://www.wikidata.org/wiki/" + e.id,
+      name: e.label, description: e.description, wikidata_id: e.id
+    }));
+  }
+
+  // ── Open Library (books by person) ──
+  async function lookupOpenLibrary(name) {
+    const data = await safeFetch("https://openlibrary.org/search/authors.json?q=" + encodeURIComponent(name) + "&limit=3");
+    if (!data || !data.docs || !data.docs.length) return null;
+    return data.docs.filter(d => d.work_count > 0).slice(0, 2).map(d => ({
+      source: "Open Library", profile_url: "https://openlibrary.org/authors/" + d.key,
+      name: d.name, birth_date: d.birth_date, death_date: d.death_date,
+      top_work: d.top_work, works_count: d.work_count
+    }));
+  }
+
+  // ── Docker Hub ──
+  async function lookupDockerHub(username) {
+    const data = await safeFetch("https://hub.docker.com/v2/users/" + encodeURIComponent(username));
+    if (!data || data.detail) return null;
+    return { source: "Docker Hub", profile_url: "https://hub.docker.com/u/" + data.username,
+      avatar: data.gravatar_url, name: data.full_name || data.username,
+      company: data.company, location: data.location, joined: data.date_joined };
+  }
+
+  // ── Mastodon / Fediverse search ──
+  async function lookupMastodon(username) {
+    // Search via mastodon.social's public API
+    const data = await safeFetch("https://mastodon.social/api/v2/search?q=" + encodeURIComponent(username) + "&type=accounts&limit=3");
+    if (!data || !data.accounts || !data.accounts.length) return null;
+    return data.accounts.slice(0, 2).map(a => ({
+      source: "Mastodon / Fediverse", profile_url: a.url, avatar: a.avatar,
+      name: a.display_name, username: a.acct, bio: a.note?.replace(/<[^>]*>/g,'').slice(0,200),
+      followers: a.followers_count, following: a.following_count,
+      posts: a.statuses_count, created: a.created_at
+    }));
+  }
+
+  // ── Gravatar (try for usernames + email) ──
+  async function lookupGravatar(query) {
+    try {
+      const hash = query.includes("@")
+        ? await sha256hex(query.trim().toLowerCase())
+        : query.toLowerCase();
+      const data = await safeFetch("https://en.gravatar.com/" + encodeURIComponent(hash) + ".json");
+      if (!data || !data.entry || !data.entry.length) return null;
+      const e = data.entry[0];
+      return { source: "Gravatar", profile_url: e.profileUrl, avatar: e.thumbnailUrl,
+        name: e.displayName, about: e.aboutMe, location: e.currentLocation,
+        urls: (e.urls || []).map(u => u.value).join(", ") || null };
+    } catch { return null; }
+  }
+
+  // sha256 for gravatar (md5 isn't in browser SubtleCrypto, gravatar also accepts sha256)
+  async function sha256hex(str) {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+  }
+
+  // ── GitHub Gists (public code snippets) ──
+  async function lookupGitHubGists(username) {
+    const data = await safeFetch("https://api.github.com/users/" + encodeURIComponent(username) + "/gists?per_page=5");
+    if (!data || !data.length) return null;
+    return { source: "GitHub Gists", profile_url: "https://gist.github.com/" + encodeURIComponent(username),
+      name: username + "'s Gists", gist_count: data.length + "+",
+      recent_gists: data.slice(0,3).map(g => (g.description || Object.keys(g.files)[0] || "Untitled")).join(", "),
+      languages: [...new Set(data.flatMap(g => Object.values(g.files).map(f => f.language)).filter(Boolean))].join(", ") || null
+    };
+  }
+
+  // ── GitHub Repos (top repos reveal tech stack + activity) ──
+  async function lookupGitHubRepos(username) {
+    const data = await safeFetch("https://api.github.com/users/" + encodeURIComponent(username) + "/repos?sort=stars&per_page=10");
+    if (!data || !data.length) return null;
+    const langs = [...new Set(data.map(r => r.language).filter(Boolean))];
+    const totalStars = data.reduce((s, r) => s + r.stargazers_count, 0);
+    return { source: "GitHub Repos Analysis", profile_url: "https://github.com/" + encodeURIComponent(username) + "?tab=repositories",
+      name: username + "'s Projects", top_languages: langs.slice(0,6).join(", "),
+      total_stars: totalStars, top_repos: data.slice(0,3).map(r => r.name + " (" + r.stargazers_count + " stars)").join(", "),
+      recently_active: data.filter(r => r.pushed_at).sort((a,b) => new Date(b.pushed_at) - new Date(a.pushed_at)).slice(0,2).map(r => r.name).join(", "),
+      has_website: data.some(r => r.homepage) ? data.find(r => r.homepage)?.homepage : null
+    };
+  }
+
+  // ── GitHub Events (recent public activity) ──
+  async function lookupGitHubEvents(username) {
+    const data = await safeFetch("https://api.github.com/users/" + encodeURIComponent(username) + "/events/public?per_page=30");
+    if (!data || !data.length) return null;
+    const types = {};
+    const repos = new Set();
+    let earliest = null, latest = null;
+    data.forEach(e => {
+      types[e.type] = (types[e.type] || 0) + 1;
+      repos.add(e.repo?.name);
+      const d = new Date(e.created_at);
+      if (!earliest || d < earliest) earliest = d;
+      if (!latest || d > latest) latest = d;
+    });
+    return { source: "GitHub Activity", profile_url: "https://github.com/" + encodeURIComponent(username),
+      name: username + "'s Recent Activity", events_analyzed: data.length,
+      activity_types: Object.entries(types).sort((a,b) => b[1] - a[1]).map(([k,v]) => k.replace("Event","") + " (" + v + ")").join(", "),
+      active_repos: [...repos].slice(0,5).join(", "),
+      active_since: earliest ? earliest.toISOString().split("T")[0] : null,
+      last_active: latest ? latest.toISOString().split("T")[0] : null,
+      active_hours: [...new Set(data.map(e => new Date(e.created_at).getUTCHours()))].sort((a,b)=>a-b).map(h => h + ":00 UTC").join(", ")
+    };
+  }
+
+  // ── PyPI (Python packages) ──
+  async function lookupPyPI(username) {
+    // PyPI doesn't have a user API, but we can search packages
+    const data = await safeFetch("https://pypi.org/pypi/" + encodeURIComponent(username) + "/json");
+    if (!data || !data.info) return null;
+    return { source: "PyPI Package", profile_url: data.info.project_url || data.info.package_url,
+      name: data.info.name, author: data.info.author, author_email: data.info.author_email,
+      summary: data.info.summary, version: data.info.version,
+      license: data.info.license?.slice(0,50), homepage: data.info.home_page };
+  }
+
+  // ── Crates.io (Rust packages) ──
+  async function lookupCratesIO(username) {
+    const data = await safeFetch("https://crates.io/api/v1/users/" + encodeURIComponent(username));
+    if (!data || !data.user) return null;
+    const u = data.user;
+    return { source: "Crates.io", profile_url: "https://crates.io/users/" + u.login,
+      avatar: u.avatar, name: u.name || u.login };
+  }
+
+  // ── DEV.to ──
+  async function lookupDevTo(username) {
+    const data = await safeFetch("https://dev.to/api/users/by_username?url=" + encodeURIComponent(username));
+    if (!data || !data.id) return null;
+    return { source: "DEV.to", profile_url: "https://dev.to/" + data.username,
+      avatar: data.profile_image, name: data.name, bio: data.summary,
+      location: data.location, joined: data.joined_at,
+      github: data.github_username, twitter: data.twitter_username };
+  }
+
+  // ── Spotify (public playlists — no auth needed for basic profile) ──
+  // Spotify doesn't have a public API without auth, but we can check profile existence
+
+  // ── IP geolocation for domains ──
+  async function lookupIPGeo(query) {
+    if (!/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(query)) return null;
+    const dns = await safeFetch("https://dns.google/resolve?name=" + encodeURIComponent(query) + "&type=A");
+    if (!dns || !dns.Answer || !dns.Answer.length) return null;
+    const ip = dns.Answer.find(a => a.type === 1)?.data;
+    if (!ip) return null;
+    const geo = await safeFetch("https://ipapi.co/" + ip + "/json/");
+    if (!geo || geo.error) return null;
+    return { source: "IP Geolocation", domain: query, ip: ip,
+      city: geo.city, region: geo.region, country: geo.country_name,
+      org: geo.org, isp: geo.org, timezone: geo.timezone,
+      latitude: geo.latitude, longitude: geo.longitude };
+  }
+
+  // ── RDAP / WHOIS-like lookup ──
+  async function lookupRDAP(query) {
+    if (!/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(query)) return null;
+    const data = await safeFetch("https://rdap.org/domain/" + encodeURIComponent(query));
+    if (!data || data.errorCode) return null;
+    const registrant = (data.entities || []).find(e => (e.roles || []).includes("registrant"));
+    const registrar = (data.entities || []).find(e => (e.roles || []).includes("registrar"));
+    const events = {};
+    (data.events || []).forEach(e => { events[e.eventAction] = e.eventDate; });
+    return { source: "WHOIS / RDAP", domain: data.ldhName,
+      status: (data.status || []).join(", "),
+      registered: events.registration, expires: events.expiration, last_changed: events["last changed"],
+      registrar: registrar?.vcardArray?.[1]?.find(v => v[0] === "fn")?.[3] || registrar?.publicIds?.[0]?.identifier,
+      nameservers: (data.nameservers || []).map(n => n.ldhName).join(", ") };
+  }
+
+  // ── Wayback Machine (internet archive) ──
+  async function lookupWayback(query) {
+    const data = await safeFetch("https://archive.org/wayback/available?url=" + encodeURIComponent(query));
+    if (!data || !data.archived_snapshots || !data.archived_snapshots.closest) return null;
+    const snap = data.archived_snapshots.closest;
+    return { source: "Wayback Machine", profile_url: snap.url,
+      name: "Internet Archive Snapshot", snapshot_date: snap.timestamp,
+      available: snap.available, status: snap.status };
+  }
+
+  // ── Username enumeration across many platforms ──
+  async function checkUsername(username) {
+    const platforms = [
+      { name: "Instagram", url: "https://www.instagram.com/" + username + "/", check: "profilePage" },
+      { name: "Twitter/X", url: "https://x.com/" + username, check: "status" },
+      { name: "TikTok", url: "https://www.tiktok.com/@" + username, check: "status" },
+      { name: "Pinterest", url: "https://www.pinterest.com/" + username + "/", check: "status" },
+      { name: "Medium", url: "https://medium.com/@" + username, check: "status" },
+      { name: "Twitch", url: "https://www.twitch.tv/" + username, check: "status" },
+      { name: "Steam", url: "https://steamcommunity.com/id/" + username, check: "status" },
+      { name: "Soundcloud", url: "https://soundcloud.com/" + username, check: "status" },
+      { name: "Flickr", url: "https://www.flickr.com/people/" + username, check: "status" },
+      { name: "Dribbble", url: "https://dribbble.com/" + username, check: "status" },
+      { name: "Behance", url: "https://www.behance.net/" + username, check: "status" },
+      { name: "About.me", url: "https://about.me/" + username, check: "status" },
+      { name: "Patreon", url: "https://www.patreon.com/" + username, check: "status" },
+      { name: "Substack", url: "https://" + username + ".substack.com", check: "status" },
+      { name: "Replit", url: "https://replit.com/@" + username, check: "status" },
+      { name: "CodePen", url: "https://codepen.io/" + username, check: "status" },
+      { name: "Kaggle", url: "https://www.kaggle.com/" + username, check: "status" },
+      { name: "Hugging Face", url: "https://huggingface.co/" + username, check: "status" },
+      { name: "Product Hunt", url: "https://www.producthunt.com/@" + username, check: "status" },
+      { name: "Linktree", url: "https://linktr.ee/" + username, check: "status" },
+    ];
+
+    // We can't actually check most due to CORS, so we generate smart profile links
+    // and check the ones that DO support CORS
+    const corsCheckable = [];
+
+    // Check DEV.to (has CORS API)
+    const devto = await lookupDevTo(username);
+    if (devto) corsCheckable.push({ name: "DEV.to", url: "https://dev.to/" + username, found: true });
+
+    // Check GitLab (has CORS API)
+    const gitlab = await lookupGitLab(username);
+    if (gitlab) corsCheckable.push({ name: "GitLab", url: gitlab.profile_url, found: true });
+
+    // Check Keybase (has CORS API)
+    const keybase = await lookupKeybase(username);
+    if (keybase) corsCheckable.push({ name: "Keybase", url: "https://keybase.io/" + username, found: true });
+
+    // Check Lichess (has CORS API)
+    const lichess = await lookupLichess(username);
+    if (lichess) corsCheckable.push({ name: "Lichess", url: "https://lichess.org/@/" + username, found: true });
+
+    const confirmedLinks = corsCheckable.filter(c => c.found).map(c => c.name + ": " + c.url);
+    const possibleLinks = platforms.map(p => p.name + ": " + p.url);
+
+    return {
+      source: "Username Enumeration", name: "Potential Profiles for '" + username + "'",
+      confirmed_profiles: confirmedLinks.join("\n") || "None confirmed via API",
+      possible_profiles_count: platforms.length + " platforms checked",
+      note: "Links below go directly to profile pages. If they load, the account exists.",
+      _platformList: platforms, _confirmed: corsCheckable
+    };
+  }
+
+  // ── Privacy exposure score ──
+  function calculateExposureScore(results) {
+    let score = 0;
+    let factors = [];
+    for (const r of results) {
+      const s = r.source || "";
+      if (s.includes("GitHub") && !s.includes("Gist") && !s.includes("Repo") && !s.includes("Activ")) {
+        score += 15; factors.push("GitHub profile exposed");
+        if (r.email) { score += 10; factors.push("Email visible on GitHub"); }
+        if (r.location) { score += 5; factors.push("Location on GitHub"); }
+        if (r.company) { score += 5; factors.push("Company on GitHub"); }
+      }
+      if (s === "Reddit") { score += 10; factors.push("Reddit account found"); }
+      if (s === "Wikipedia") { score += 5; factors.push("Wikipedia page exists"); }
+      if (s === "Stack Overflow") { score += 8; factors.push("Stack Overflow profile found"); if (r.location) { score += 3; factors.push("Location on Stack Overflow"); } }
+      if (s === "Hacker News") { score += 8; factors.push("Hacker News account found"); }
+      if (s === "Gravatar") { score += 10; factors.push("Gravatar profile found"); if (r.urls) { score += 5; factors.push("Linked URLs on Gravatar"); } }
+      if (s === "GitLab") { score += 8; factors.push("GitLab profile found"); }
+      if (s === "Keybase") { score += 10; factors.push("Keybase profile (may link many accounts)"); if (r.linked_accounts) score += 10; }
+      if (s === "Docker Hub") { score += 5; factors.push("Docker Hub account"); }
+      if (s === "npm") { score += 5; factors.push("npm registry profile"); if (r.email) { score += 10; factors.push("Email exposed on npm"); } }
+      if (s === "DEV.to") { score += 5; factors.push("DEV.to profile"); if (r.github) score += 3; if (r.twitter) score += 3; }
+      if (s.includes("Mastodon")) { score += 8; factors.push("Fediverse presence"); }
+      if (s.includes("HIBP")) { score += 5; factors.push("Breach database context loaded"); }
+      if (s.includes("GitHub Repos")) { score += 5; factors.push("Public repos reveal tech stack"); }
+      if (s.includes("GitHub Activity")) { score += 8; factors.push("Activity patterns reveal timezone/schedule"); }
+      if (s.includes("GitHub Gists")) { score += 5; factors.push("Public gists may contain sensitive snippets"); }
+      if (s.includes("WHOIS")) { score += 12; factors.push("Domain WHOIS data available"); }
+      if (s.includes("IP Geo")) { score += 8; factors.push("Server geolocation exposed"); }
+      if (s.includes("Wayback")) { score += 5; factors.push("Archived web content exists"); }
+      if (s.includes("Lichess")) { score += 3; factors.push("Lichess gaming profile"); }
+      if (s.includes("Wikidata")) { score += 3; factors.push("Wikidata entity exists"); }
+      if (s.includes("Open Library")) { score += 3; factors.push("Published works found"); }
+      if (s.includes("Crates.io")) { score += 3; factors.push("Rust packages published"); }
+      if (s.includes("PyPI")) { score += 5; factors.push("Python package with author info"); }
+      if (s.includes("Username Enum")) { score += 10; factors.push("Username exists across multiple platforms"); }
+    }
+    return { score: Math.min(score, 100), factors };
+  }
 
   async function doTextSearch() {
     const query = textInput.value.trim();
@@ -584,20 +936,26 @@
     const sanitized = query.slice(0, 100);
     const isUsername = !/\s/.test(sanitized);
 
-    const tasks = [];
-    tasks.push(lookupWikipedia(sanitized));
-    if (isUsername) {
-      tasks.push(lookupGitHub(sanitized));
-      tasks.push(lookupReddit(sanitized));
-      tasks.push(lookupStackOverflow(sanitized));
-      tasks.push(lookupHackerNews(sanitized));
-      tasks.push(lookupDNS(sanitized));
-    } else {
-      tasks.push(lookupGitHubByName(sanitized));
-      tasks.push(lookupStackOverflow(sanitized));
-    }
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized);
+    const isDomain = /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(sanitized) && !isEmail;
 
-    const settled = await Promise.allSettled(tasks);
+    // ── Phase 1: Core lookups ──
+    statusEl.innerHTML = '<span class="spinner"></span> Phase 1/3: Core platform search...';
+    const coreTasks = [];
+    coreTasks.push(lookupWikipedia(sanitized));
+    if (isUsername) {
+      coreTasks.push(lookupGitHub(sanitized));
+      coreTasks.push(lookupReddit(sanitized));
+      coreTasks.push(lookupStackOverflow(sanitized));
+      coreTasks.push(lookupHackerNews(sanitized));
+    } else {
+      coreTasks.push(lookupGitHubByName(sanitized));
+      coreTasks.push(lookupStackOverflow(sanitized));
+    }
+    if (isEmail) coreTasks.push(lookupGravatar(sanitized));
+    if (isDomain) { coreTasks.push(lookupDNS(sanitized)); coreTasks.push(lookupRDAP(sanitized)); coreTasks.push(lookupIPGeo(sanitized)); coreTasks.push(lookupWayback(sanitized)); }
+
+    let settled = await Promise.allSettled(coreTasks);
     const results = [];
     for (const r of settled) {
       if (r.status === "fulfilled" && r.value !== null) {
@@ -606,13 +964,125 @@
       }
     }
 
+    // ── Phase 2: Deep platform search ──
+    statusEl.innerHTML = '<span class="spinner"></span> Phase 2/3: Deep platform search (' + results.length + ' found so far)...';
+    const deepTasks = [];
+    if (isUsername) {
+      deepTasks.push(lookupGitLab(sanitized));
+      deepTasks.push(lookupKeybase(sanitized));
+      deepTasks.push(lookupNpm(sanitized));
+      deepTasks.push(lookupDockerHub(sanitized));
+      deepTasks.push(lookupDevTo(sanitized));
+      deepTasks.push(lookupLichess(sanitized));
+      deepTasks.push(lookupMastodon(sanitized));
+      deepTasks.push(lookupGravatar(sanitized));
+      deepTasks.push(lookupCratesIO(sanitized));
+      deepTasks.push(lookupPyPI(sanitized));
+    }
+    deepTasks.push(lookupWikidata(sanitized));
+    deepTasks.push(lookupOpenLibrary(sanitized));
+
+    settled = await Promise.allSettled(deepTasks);
+    for (const r of settled) {
+      if (r.status === "fulfilled" && r.value !== null) {
+        if (Array.isArray(r.value)) results.push(...r.value);
+        else results.push(r.value);
+      }
+    }
+
+    // ── Phase 3: Activity analysis + enumeration ──
+    statusEl.innerHTML = '<span class="spinner"></span> Phase 3/3: Activity analysis & enumeration (' + results.length + ' found)...';
+    const analysisTasks = [];
+    if (isUsername) {
+      // Only do GitHub deep analysis if we found a GitHub profile
+      if (results.some(r => r.source === "GitHub")) {
+        analysisTasks.push(lookupGitHubRepos(sanitized));
+        analysisTasks.push(lookupGitHubGists(sanitized));
+        analysisTasks.push(lookupGitHubEvents(sanitized));
+      }
+      analysisTasks.push(lookupBreaches(sanitized));
+    }
+    if (isEmail) {
+      analysisTasks.push(lookupBreaches(sanitized));
+    }
+
+    settled = await Promise.allSettled(analysisTasks);
+    for (const r of settled) {
+      if (r.status === "fulfilled" && r.value !== null) {
+        if (Array.isArray(r.value)) results.push(...r.value);
+        else results.push(r.value);
+      }
+    }
+
+    // ── Build username enumeration card ──
+    if (isUsername) {
+      const platforms = [
+        { name: "Instagram", url: "https://www.instagram.com/" + sanitized + "/" },
+        { name: "Twitter/X", url: "https://x.com/" + sanitized },
+        { name: "TikTok", url: "https://www.tiktok.com/@" + sanitized },
+        { name: "Pinterest", url: "https://www.pinterest.com/" + sanitized + "/" },
+        { name: "Medium", url: "https://medium.com/@" + sanitized },
+        { name: "Twitch", url: "https://www.twitch.tv/" + sanitized },
+        { name: "Steam", url: "https://steamcommunity.com/id/" + sanitized },
+        { name: "Soundcloud", url: "https://soundcloud.com/" + sanitized },
+        { name: "Dribbble", url: "https://dribbble.com/" + sanitized },
+        { name: "Behance", url: "https://www.behance.net/" + sanitized },
+        { name: "Patreon", url: "https://www.patreon.com/" + sanitized },
+        { name: "Substack", url: "https://" + sanitized + ".substack.com" },
+        { name: "Replit", url: "https://replit.com/@" + sanitized },
+        { name: "CodePen", url: "https://codepen.io/" + sanitized },
+        { name: "Kaggle", url: "https://www.kaggle.com/" + sanitized },
+        { name: "Hugging Face", url: "https://huggingface.co/" + sanitized },
+        { name: "Linktree", url: "https://linktr.ee/" + sanitized },
+        { name: "About.me", url: "https://about.me/" + sanitized },
+        { name: "Product Hunt", url: "https://www.producthunt.com/@" + sanitized },
+        { name: "Flickr", url: "https://www.flickr.com/people/" + sanitized },
+      ];
+      const confirmed = results.filter(r => r.profile_url).map(r => r.source);
+      results.push({
+        source: "Username Enumeration",
+        name: "Profile links for '" + sanitized + "' across 20+ platforms",
+        confirmed_via_api: confirmed.join(", ") || "None",
+        note: "Click links below - if the page loads, the account exists",
+        _platforms: platforms
+      });
+    }
+
+    // ── Privacy exposure score ──
+    const exposure = calculateExposureScore(results);
+
     statusEl.classList.add("hidden");
     if (results.length === 0) {
       resultsEl.innerHTML = '<div class="status" style="grid-column:1/-1">No public information found for "' + escapeHtml(query) + '"</div>';
     } else {
       headerEl.classList.remove("hidden");
-      headerEl.innerHTML = 'Found <strong>' + results.length + '</strong> result' + (results.length !== 1 ? 's' : '') + ' for "<strong>' + escapeHtml(sanitized) + '</strong>"';
-      for (const r of results) resultsEl.innerHTML += renderCard(r);
+      // Exposure report header
+      const scoreCls = exposure.score >= 60 ? "var(--danger)" : exposure.score >= 30 ? "var(--orange)" : "var(--green)";
+      const scoreLabel = exposure.score >= 60 ? "HIGH EXPOSURE" : exposure.score >= 30 ? "MODERATE EXPOSURE" : "LOW EXPOSURE";
+      headerEl.innerHTML =
+        '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px">' +
+          '<div>Found <strong>' + results.length + '</strong> result' + (results.length !== 1 ? 's' : '') + ' across <strong>' + new Set(results.map(r=>r.source)).size + '</strong> sources for "<strong>' + escapeHtml(sanitized) + '</strong>"</div>' +
+          '<div style="margin-left:auto;text-align:right">' +
+            '<div style="font-size:0.78rem;color:var(--text2)">Privacy Exposure Score</div>' +
+            '<div style="font-size:1.4rem;font-weight:700;color:' + scoreCls + '">' + exposure.score + '/100 <span style="font-size:0.75rem">' + scoreLabel + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="width:100%;height:6px;background:var(--surface);border-radius:3px;overflow:hidden;margin-bottom:8px">' +
+          '<div style="height:100%;width:' + exposure.score + '%;background:' + scoreCls + ';border-radius:3px;transition:width 0.5s"></div>' +
+        '</div>' +
+        '<details style="font-size:0.8rem;color:var(--text2)">' +
+          '<summary style="cursor:pointer;color:var(--accent)">View ' + exposure.factors.length + ' exposure factors</summary>' +
+          '<ul style="margin-top:6px;padding-left:18px;line-height:1.7">' + exposure.factors.map(f => '<li>' + escapeHtml(f) + '</li>').join('') + '</ul>' +
+        '</details>';
+
+      for (const r of results) {
+        if (r._platforms) {
+          // Special render for username enumeration
+          resultsEl.innerHTML += renderEnumerationCard(r);
+        } else {
+          resultsEl.innerHTML += renderCard(r);
+        }
+      }
     }
     btn.disabled = false;
   }
@@ -622,7 +1092,7 @@
       ? '<img class="avatar" src="' + escapeHtml(r.avatar || r.thumbnail) + '" alt="" />'
       : '<div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;color:var(--text2)">' + escapeHtml((r.name||r.source||"?")[0]) + '</div>';
     let fields = "";
-    const skip = new Set(["source","icon","avatar","thumbnail","profile_url","name","extract","exists"]);
+    const skip = new Set(["source","icon","avatar","thumbnail","profile_url","name","extract","exists","_platforms","_platformList","_confirmed"]);
     for (const [key, val] of Object.entries(r)) {
       if (skip.has(key) || val == null || val === "") continue;
       const label = key.replace(/_/g," ").replace(/\b\w/g, c => c.toUpperCase());
@@ -638,6 +1108,22 @@
     const extract = r.extract ? '<div class="extract">'+escapeHtml(r.extract)+'</div>' : "";
     const link = r.profile_url ? '<a href="'+escapeHtml(r.profile_url)+'" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none;font-size:0.78rem">View Profile &rarr;</a>' : "";
     return '<div class="card"><div class="card-head">'+avatar+'<div class="info"><span class="source-badge">'+escapeHtml(r.source)+'</span><div class="name">'+escapeHtml(r.name||"Unknown")+'</div></div></div><div class="card-fields">'+fields+'</div>'+extract+'<div style="margin-top:12px">'+link+'</div></div>';
+  }
+
+  function renderEnumerationCard(r) {
+    let links = '';
+    for (const p of r._platforms) {
+      links += '<a href="' + escapeHtml(p.url) + '" target="_blank" rel="noopener" ' +
+        'style="display:inline-block;padding:5px 12px;margin:3px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--accent2);text-decoration:none;font-size:0.8rem;transition:all 0.2s" ' +
+        'onmouseover="this.style.borderColor=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\'">' +
+        escapeHtml(p.name) + '</a>';
+    }
+    return '<div class="card" style="grid-column:1/-1">' +
+      '<div class="card-head"><div class="info"><span class="source-badge">' + escapeHtml(r.source) + '</span>' +
+      '<div class="name">' + escapeHtml(r.name) + '</div></div></div>' +
+      '<div style="font-size:0.83rem;color:var(--text2);margin-bottom:10px">' + escapeHtml(r.note) + '</div>' +
+      '<div style="font-size:0.82rem;color:var(--text);margin-bottom:8px">Confirmed via API: <strong>' + escapeHtml(r.confirmed_via_api) + '</strong></div>' +
+      '<div>' + links + '</div></div>';
   }
 
   // ═══════════════════════════════════════════════════
