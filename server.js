@@ -31,7 +31,8 @@ const upload = multer({
 });
 
 app.use(express.json({ limit: "15mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(__dirname));           // serves index.html from root
+app.use(express.static(path.join(__dirname, "public"))); // legacy compat
 app.use("/uploads", express.static(UPLOADS_DIR));
 
 // ── Helpers ─────────────────────────────────────────────────────────────

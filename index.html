@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Person Lookup - Educational OSINT Tool</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #181b24;
+      --card: #1e2230;
+      --border: #2a2f3e;
+      --accent: #6c5ce7;
+      --accent2: #00cec9;
+      --green: #00b894;
+      --orange: #fdcb6e;
+      --text: #e4e6eb;
+      --text2: #8b8fa3;
+      --danger: #e74c3c;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+    }
+
+    /* ── Header ───────────────────────────────────────── */
+    .header { text-align: center; padding: 40px 20px 16px; }
+    .header h1 {
+      font-size: 2.2rem; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .header p { color: var(--text2); margin-top: 6px; font-size: 0.92rem; }
+    .disclaimer {
+      max-width: 700px; margin: 0 auto 20px; padding: 10px 20px;
+      background: rgba(231,76,60,0.08); border: 1px solid rgba(231,76,60,0.2);
+      border-radius: var(--radius); color: #f5a6a0; font-size: 0.8rem;
+      text-align: center; line-height: 1.5;
+    }
+
+    /* ── Tabs ──────────────────────────────────────────── */
+    .tabs {
+      display: flex; justify-content: center; gap: 4px;
+      margin: 0 auto 28px; max-width: 700px; padding: 0 20px;
+    }
+    .tab-btn {
+      flex: 1; max-width: 220px; padding: 12px 20px;
+      font-size: 0.92rem; font-weight: 600; cursor: pointer;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text2); border-radius: var(--radius); transition: all 0.2s;
+    }
+    .tab-btn:hover { border-color: var(--accent); color: var(--text); }
+    .tab-btn.active {
+      background: linear-gradient(135deg, var(--accent), #7c6cf0);
+      color: white; border-color: var(--accent);
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Shared buttons / status ──────────────────────── */
+    .search-box {
+      max-width: 640px; margin: 0 auto 36px; padding: 0 20px;
+      display: flex; gap: 10px;
+    }
+    .search-box input {
+      flex: 1; padding: 14px 20px; font-size: 1rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text); outline: none;
+      transition: border-color 0.2s;
+    }
+    .search-box input:focus { border-color: var(--accent); }
+    .search-box input::placeholder { color: var(--text2); }
+    .btn {
+      padding: 14px 28px; font-size: 1rem; font-weight: 600;
+      background: linear-gradient(135deg, var(--accent), #7c6cf0);
+      color: white; border: none; border-radius: var(--radius);
+      cursor: pointer; transition: opacity 0.2s, transform 0.1s; white-space: nowrap;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { padding: 10px 18px; font-size: 0.88rem; }
+    .btn-outline { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+    .btn-outline:hover { background: rgba(108,92,231,0.1); }
+    .btn-green { background: linear-gradient(135deg, var(--green), #00a381); }
+    .status { text-align: center; color: var(--text2); padding: 20px; font-size: 0.95rem; }
+    .status.error { color: var(--danger); }
+    .spinner {
+      display: inline-block; width: 20px; height: 20px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle; margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Text results ─────────────────────────────────── */
+    .results-header {
+      max-width: 900px; margin: 0 auto; padding: 0 20px 12px;
+      color: var(--text2); font-size: 0.9rem;
+    }
+    .results-header strong { color: var(--text); }
+    .results {
+      max-width: 900px; margin: 0 auto; padding: 0 20px 60px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px;
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px; transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--accent); }
+    .card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .card-head .avatar {
+      width: 48px; height: 48px; border-radius: 50%;
+      object-fit: cover; background: var(--surface);
+    }
+    .card-head .source-badge {
+      font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; padding: 3px 8px; border-radius: 6px;
+      background: rgba(108,92,231,0.15); color: var(--accent);
+    }
+    .card-head .name { font-size: 1.1rem; font-weight: 600; }
+    .card-head .info { flex: 1; }
+    .card-fields { display: flex; flex-direction: column; gap: 6px; }
+    .card-field { display: flex; gap: 8px; font-size: 0.87rem; line-height: 1.5; }
+    .card-field .label { color: var(--text2); min-width: 90px; flex-shrink: 0; }
+    .card-field .value { color: var(--text); word-break: break-word; }
+    .card-field a { color: var(--accent2); text-decoration: none; }
+    .card-field a:hover { text-decoration: underline; }
+    .extract {
+      font-size: 0.85rem; line-height: 1.6; color: var(--text2); margin-top: 8px;
+      display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .tips { max-width: 640px; margin: 0 auto; padding: 0 20px 40px; }
+    .tips h3 { color: var(--text2); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+    .tips ul { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; }
+    .tips li {
+      padding: 6px 14px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 20px; font-size: 0.82rem; color: var(--text2);
+      cursor: pointer; transition: all 0.2s;
+    }
+    .tips li:hover { border-color: var(--accent); color: var(--text); }
+
+    /* ── Image search ─────────────────────────────────── */
+    .img-container { max-width: 900px; margin: 0 auto; padding: 0 20px 60px; }
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: var(--radius);
+      padding: 48px 20px; text-align: center; cursor: pointer;
+      transition: all 0.25s; background: var(--surface);
+    }
+    .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: rgba(108,92,231,0.06); }
+    .drop-zone .icon { font-size: 3rem; margin-bottom: 12px; opacity: 0.7; }
+    .drop-zone .main-text { font-size: 1.05rem; color: var(--text); margin-bottom: 6px; }
+    .drop-zone .sub-text { font-size: 0.82rem; color: var(--text2); }
+    .drop-zone input { display: none; }
+
+    .analysis-grid { display: grid; grid-template-columns: 340px 1fr; gap: 20px; margin-top: 24px; }
+    @media (max-width: 750px) { .analysis-grid { grid-template-columns: 1fr; } }
+
+    .preview-panel {
+      position: relative; border-radius: var(--radius); overflow: hidden;
+      background: var(--card); border: 1px solid var(--border);
+    }
+    .preview-panel img { width: 100%; display: block; max-height: 420px; object-fit: contain; background: #111; }
+    .preview-panel canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+    .info-panel { display: flex; flex-direction: column; gap: 16px; }
+    .panel-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 18px;
+    }
+    .panel-card h3 {
+      font-size: 0.82rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; color: var(--accent); margin-bottom: 12px;
+    }
+    .face-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .face-chip {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 12px; font-size: 0.82rem;
+    }
+    .face-chip img { width: 36px; height: 36px; border-radius: 6px; object-fit: cover; }
+    .face-chip .details { line-height: 1.4; }
+    .face-chip .primary { color: var(--text); font-weight: 500; }
+    .face-chip .secondary { color: var(--text2); font-size: 0.78rem; }
+
+    .exif-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 0.83rem; }
+    .exif-grid .elabel { color: var(--text2); }
+    .exif-grid .evalue { color: var(--text); word-break: break-word; }
+
+    .engine-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 10px;
+    }
+    .engine-btn {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 12px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text); font-size: 0.85rem;
+      font-weight: 500; cursor: pointer; transition: all 0.2s; text-decoration: none;
+    }
+    .engine-btn:hover { border-color: var(--accent); background: rgba(108,92,231,0.08); }
+    .engine-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+    .search-all-row { margin-top: 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .search-all-row .note { font-size: 0.78rem; color: var(--text2); }
+
+    /* ── Face compare ─────────────────────────────────── */
+    .compare-area {
+      display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px;
+      align-items: start; margin-top: 12px;
+    }
+    @media (max-width: 600px) { .compare-area { grid-template-columns: 1fr; } }
+    .compare-side { text-align: center; }
+    .compare-drop {
+      border: 2px dashed var(--border); border-radius: var(--radius);
+      padding: 24px 12px; cursor: pointer; transition: all 0.2s;
+      background: var(--surface); min-height: 140px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+    .compare-drop:hover { border-color: var(--accent); }
+    .compare-drop img { max-width: 100%; max-height: 200px; border-radius: 8px; margin-bottom: 8px; }
+    .compare-drop .placeholder { color: var(--text2); font-size: 0.85rem; }
+    .compare-vs {
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.3rem; font-weight: 700; color: var(--text2); padding-top: 60px;
+    }
+    .compare-result {
+      margin-top: 16px; padding: 16px; border-radius: var(--radius); text-align: center; font-size: 0.95rem;
+    }
+    .compare-result.match { background: rgba(0,184,148,0.1); border: 1px solid rgba(0,184,148,0.3); color: var(--green); }
+    .compare-result.no-match { background: rgba(231,76,60,0.1); border: 1px solid rgba(231,76,60,0.3); color: var(--danger); }
+    .compare-result.uncertain { background: rgba(253,203,110,0.1); border: 1px solid rgba(253,203,110,0.3); color: var(--orange); }
+    .match-bar-track { width: 100%; height: 8px; background: var(--surface); border-radius: 4px; margin-top: 10px; overflow: hidden; }
+    .match-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+    .model-status { font-size: 0.8rem; color: var(--text2); text-align: center; padding: 10px; margin-bottom: 10px; }
+    .model-status .loaded { color: var(--green); }
+    .hidden { display: none !important; }
+
+    .cors-note {
+      max-width: 640px; margin: 0 auto 16px; padding: 8px 16px;
+      background: rgba(108,92,231,0.08); border: 1px solid rgba(108,92,231,0.2);
+      border-radius: var(--radius); color: var(--text2); font-size: 0.78rem;
+      text-align: center; line-height: 1.5;
+    }
+
+    @media (max-width: 480px) {
+      .header h1 { font-size: 1.6rem; }
+      .search-box { flex-direction: column; }
+      .results { grid-template-columns: 1fr; }
+      .engine-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>Person Lookup</h1>
+    <p>Search public information by name, username, email, or face image</p>
+  </div>
+
+  <div class="disclaimer">
+    <strong>Educational Use Only.</strong> This tool queries publicly available APIs and uses client-side face detection.
+    No private data is accessed. Always respect privacy. Do not use for harassment, stalking, or any malicious purpose.
+  </div>
+
+  <!-- ── Tabs ──────────────────────────────────────── -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('text')">Text Search</button>
+    <button class="tab-btn" onclick="switchTab('image')">Image Search</button>
+    <button class="tab-btn" onclick="switchTab('compare')">Face Compare</button>
+  </div>
+
+  <!-- ══════════════ TAB 1 : TEXT SEARCH ═════════════ -->
+  <div id="tab-text" class="tab-content active">
+    <div class="cors-note">
+      Runs 100% in your browser. Some APIs (Reddit, Gravatar) may be unavailable due to CORS restrictions.
+    </div>
+    <div class="search-box">
+      <input type="text" id="query" placeholder="Enter a name, username, or email..." autocomplete="off" maxlength="100" />
+      <button class="btn" id="searchBtn" onclick="doTextSearch()">Search</button>
+    </div>
+    <div class="tips" id="tips">
+      <h3>Try searching for</h3>
+      <ul>
+        <li onclick="tryQuery('torvalds')">torvalds</li>
+        <li onclick="tryQuery('Elon Musk')">Elon Musk</li>
+        <li onclick="tryQuery('defunkt')">defunkt</li>
+        <li onclick="tryQuery('Albert Einstein')">Albert Einstein</li>
+        <li onclick="tryQuery('gvanrossum')">gvanrossum</li>
+      </ul>
+    </div>
+    <div id="textStatus" class="status hidden"></div>
+    <div id="textResultsHeader" class="results-header hidden"></div>
+    <div id="textResults" class="results"></div>
+  </div>
+
+  <!-- ══════════════ TAB 2 : IMAGE SEARCH ════════════ -->
+  <div id="tab-image" class="tab-content">
+    <div class="img-container">
+      <div id="imgModelStatus" class="model-status">Loading face detection models...</div>
+
+      <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <div class="icon">&#128247;</div>
+        <div class="main-text">Drop an image here, click to browse, or paste (Ctrl+V)</div>
+        <div class="sub-text">Supports JPG, PNG, GIF, WebP &bull; Max 15 MB &bull; All processing happens in your browser</div>
+        <input type="file" id="fileInput" accept="image/*" />
+      </div>
+
+      <div id="imgAnalysis" class="hidden">
+        <div class="analysis-grid">
+          <div>
+            <div class="preview-panel">
+              <img id="previewImg" src="" alt="Uploaded image" />
+              <canvas id="faceCanvas"></canvas>
+            </div>
+            <div style="margin-top:10px; text-align:center">
+              <button class="btn btn-sm" onclick="document.getElementById('fileInput').click()">Upload Different Image</button>
+            </div>
+          </div>
+          <div class="info-panel">
+            <div class="panel-card">
+              <h3>Face Detection</h3>
+              <div id="faceStatus" class="status" style="padding:8px 0">Analyzing...</div>
+              <div id="faceResults" class="face-chips"></div>
+            </div>
+            <div class="panel-card">
+              <h3>Image Metadata</h3>
+              <div id="exifResults" class="exif-grid"><span class="elabel">Analyzing...</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card" style="margin-top:20px">
+          <h3>Reverse Image Search</h3>
+          <p style="font-size:0.83rem; color:var(--text2); margin-bottom:14px">
+            Search for this exact image across the internet. Each engine uses different databases and algorithms.
+            Your image is submitted directly to the search engine from your browser.
+          </p>
+          <div class="engine-grid" id="engineGrid">
+            <button class="engine-btn" onclick="searchEngine('google')" title="Google Lens">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+              Google
+            </button>
+            <button class="engine-btn" onclick="searchEngine('yandex')" title="Yandex Images">
+              <svg viewBox="0 0 24 24" fill="#FF0000"><path d="M2 12C2 6.48 6.48 2 12 2s10 4.48 10 10-4.48 10-10 10S2 17.52 2 12zm11.3-6.5h-1.97L8.18 18.5h2.1l1.36-4.8h.3l2.67 4.8h2.3l-3.06-5.2c1.7-.66 2.7-2.05 2.7-3.95 0-2.5-1.6-3.85-3.95-3.85zm-.52 5.77h-.46l.96-3.87h.42c1.27 0 2.04.6 2.04 1.82 0 1.36-.94 2.05-2.96 2.05z"/></svg>
+              Yandex
+            </button>
+            <button class="engine-btn" onclick="searchEngine('bing')" title="Bing Visual Search">
+              <svg viewBox="0 0 24 24" fill="#00809D"><path d="M5 3v16.5l4.06 2.3 7.97-4.37.03-4.9L11.5 10V3.5L5 3zm4.06 12.57v-3.77l3.58 1.98-3.58 1.79z"/></svg>
+              Bing
+            </button>
+            <button class="engine-btn" onclick="searchEngine('tineye')" title="TinEye">
+              <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4" fill="currentColor"/><line x1="12" y1="2" x2="12" y2="6" stroke="currentColor" stroke-width="2"/><line x1="12" y1="18" x2="12" y2="22" stroke="currentColor" stroke-width="2"/></svg>
+              TinEye
+            </button>
+            <button class="engine-btn" onclick="searchEngine('baidu')" title="Baidu">
+              <svg viewBox="0 0 24 24" fill="#2529D8"><path d="M5.93 12.5c1.47 1.37 3.11 3.47 3.6 5.15.7 2.35 2.2 2.85 3.47 2.85 1.9 0 2.74-.95 3.66-2.78.63-1.25 2.45-2.6 3.4-3.3 1.85-1.38 2.1-3.4.84-5-.77-.96-2.2-1.2-3.48-.55-.78.4-1.55 1-2.05 1-1.03 0-1.2-.74-2.8-.74s-2.12.8-3.03.8c-.67 0-1.17-.64-2.12-1.1-1.38-.66-2.73-.1-3.17 1.03-.57 1.45.42 2.58 1.68 2.64z"/></svg>
+              Baidu
+            </button>
+            <button class="engine-btn" onclick="searchEngine('karmadecay')" title="Reddit search">
+              <svg viewBox="0 0 24 24" fill="#FF4500"><circle cx="12" cy="12" r="10" fill="none" stroke="#FF4500" stroke-width="1.5"/><text x="12" y="16" text-anchor="middle" font-size="10" font-weight="bold" fill="#FF4500">R</text></svg>
+              KarmaDecay
+            </button>
+          </div>
+          <div class="search-all-row">
+            <button class="btn btn-sm btn-green" onclick="searchAllEngines()">Search All Engines</button>
+            <span class="note">Allow popups for "Search All" to work</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ TAB 3 : FACE COMPARE ════════════ -->
+  <div id="tab-compare" class="tab-content">
+    <div class="img-container">
+      <div id="compareModelStatus" class="model-status">Loading face detection models...</div>
+      <div class="panel-card">
+        <h3>Face Comparison Tool</h3>
+        <p style="font-size:0.85rem; color:var(--text2); margin-bottom:16px">
+          Upload two images to check if they contain the <strong>same person</strong>.
+          Uses a 128-dimensional face descriptor with Euclidean distance matching.
+          Everything runs locally in your browser &mdash; no images are uploaded anywhere.
+        </p>
+        <div class="compare-area">
+          <div class="compare-side">
+            <div class="compare-drop" id="compareDrop1" onclick="document.getElementById('compareInput1').click()">
+              <div id="comparePreview1" class="placeholder">Drop or click<br/>Image 1</div>
+            </div>
+            <input type="file" id="compareInput1" accept="image/*" style="display:none" />
+          </div>
+          <div class="compare-vs">VS</div>
+          <div class="compare-side">
+            <div class="compare-drop" id="compareDrop2" onclick="document.getElementById('compareInput2').click()">
+              <div id="comparePreview2" class="placeholder">Drop or click<br/>Image 2</div>
+            </div>
+            <input type="file" id="compareInput2" accept="image/*" style="display:none" />
+          </div>
+        </div>
+        <div style="text-align:center; margin-top:18px">
+          <button class="btn" id="compareBtn" onclick="compareFaces()" disabled>Compare Faces</button>
+        </div>
+        <div id="compareResult" class="hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── face-api.js ─────────────────────────────── -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+  <script>
+  // ═══════════════════════════════════════════════════
+  //  GLOBALS
+  // ═══════════════════════════════════════════════════
+  const MODEL_URL = "https://justadudewhohacks.github.io/face-api.js/weights";
+  let modelsLoaded = false;
+  let uploadedFile = null;
+  let compareFile1 = null, compareFile2 = null;
+
+  // ═══════════════════════════════════════════════════
+  //  TAB SWITCHING
+  // ═══════════════════════════════════════════════════
+  function switchTab(name) {
+    document.querySelectorAll(".tab-btn").forEach(b => {
+      const id = b.textContent.toLowerCase();
+      b.classList.toggle("active",
+        (name === "text" && id.includes("text")) ||
+        (name === "image" && id.includes("image")) ||
+        (name === "compare" && id.includes("compare"))
+      );
+    });
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
+    document.getElementById("tab-" + name).classList.add("active");
+  }
+
+  // ═══════════════════════════════════════════════════
+  //  LOAD FACE-API MODELS
+  // ═══════════════════════════════════════════════════
+  async function loadModels() {
+    try {
+      await Promise.all([
+        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL),
+        faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
+      ]);
+      modelsLoaded = true;
+      document.getElementById("imgModelStatus").innerHTML = '<span class="loaded">Face detection models loaded.</span>';
+      document.getElementById("compareModelStatus").innerHTML = '<span class="loaded">Face detection models loaded.</span>';
+    } catch (err) {
+      const msg = "Failed to load models: " + err.message;
+      document.getElementById("imgModelStatus").textContent = msg;
+      document.getElementById("compareModelStatus").textContent = msg;
+    }
+  }
+  loadModels();
+
+  // ═══════════════════════════════════════════════════
+  //  UTILITIES
+  // ═══════════════════════════════════════════════════
+  function escapeHtml(str) {
+    if (!str) return "";
+    const d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function fileToImage(file) {
+    return new Promise(resolve => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.src = url;
+    });
+  }
+
+  function getExpressionLabel(expressions) {
+    const entries = Object.entries(expressions).sort((a, b) => b[1] - a[1]);
+    return entries[0][0].charAt(0).toUpperCase() + entries[0][0].slice(1) + " (" + (entries[0][1] * 100).toFixed(0) + "%)";
+  }
+
+  // Safe CORS fetch — returns null on network / CORS errors
+  async function safeFetch(url) {
+    try {
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch { return null; }
+  }
+
+  // ═══════════════════════════════════════════════════
+  //  TAB 1 — TEXT SEARCH  (all client-side)
+  // ═══════════════════════════════════════════════════
+  const textInput = document.getElementById("query");
+  textInput.addEventListener("keydown", e => { if (e.key === "Enter") doTextSearch(); });
+  function tryQuery(q) { textInput.value = q; doTextSearch(); }
+
+  // ── Lookup functions (direct browser fetch) ──────
+
+  async function lookupGitHub(username) {
+    const data = await safeFetch("https://api.github.com/users/" + encodeURIComponent(username));
+    if (!data || data.message) return null;
+    return { source: "GitHub", profile_url: data.html_url, avatar: data.avatar_url,
+      name: data.name, bio: data.bio, location: data.location, company: data.company,
+      blog: data.blog, public_repos: data.public_repos, followers: data.followers,
+      following: data.following, created: data.created_at };
+  }
+
+  async function lookupGitHubByName(name) {
+    const data = await safeFetch("https://api.github.com/search/users?q=" + encodeURIComponent(name) + "&per_page=5");
+    if (!data || !data.items || !data.items.length) return null;
+    const results = [];
+    for (const u of data.items.slice(0, 3)) {
+      const d = await lookupGitHub(u.login);
+      if (d) results.push(d);
+    }
+    return results.length ? results : null;
+  }
+
+  async function lookupWikipedia(name) {
+    const data = await safeFetch("https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(name.replace(/ /g, "_")));
+    if (!data || data.type === "not_found") return null;
+    return { source: "Wikipedia", profile_url: data.content_urls?.desktop?.page,
+      thumbnail: data.thumbnail?.source, name: data.title, description: data.description,
+      extract: data.extract };
+  }
+
+  async function lookupStackOverflow(username) {
+    const data = await safeFetch("https://api.stackexchange.com/2.3/users?order=desc&sort=reputation&inname=" + encodeURIComponent(username) + "&site=stackoverflow&pagesize=3");
+    if (!data || !data.items || !data.items.length) return null;
+    return data.items.slice(0, 3).map(u => ({
+      source: "Stack Overflow", profile_url: u.link, avatar: u.profile_image,
+      name: u.display_name, reputation: u.reputation,
+      badge_gold: u.badge_counts?.gold, badge_silver: u.badge_counts?.silver,
+      badge_bronze: u.badge_counts?.bronze, location: u.location,
+      created: new Date(u.creation_date * 1000).toISOString()
+    }));
+  }
+
+  async function lookupHackerNews(username) {
+    const data = await safeFetch("https://hacker-news.firebaseio.com/v0/user/" + encodeURIComponent(username) + ".json");
+    if (!data || !data.id) return null;
+    return { source: "Hacker News", profile_url: "https://news.ycombinator.com/user?id=" + data.id,
+      name: data.id, karma: data.karma, about: data.about,
+      created: new Date(data.created * 1000).toISOString() };
+  }
+
+  async function lookupReddit(username) {
+    const data = await safeFetch("https://www.reddit.com/user/" + encodeURIComponent(username) + "/about.json");
+    if (!data || !data.data) return null;
+    const d = data.data;
+    return { source: "Reddit", profile_url: "https://www.reddit.com/user/" + d.name,
+      avatar: d.icon_img ? d.icon_img.split("?")[0] : null, name: d.name,
+      link_karma: d.link_karma, comment_karma: d.comment_karma,
+      created: new Date(d.created_utc * 1000).toISOString(), verified: d.verified };
+  }
+
+  async function lookupDNS(query) {
+    if (!/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(query)) return null;
+    const data = await safeFetch("https://dns.google/resolve?name=" + encodeURIComponent(query) + "&type=A");
+    if (!data) return null;
+    return { source: "DNS Lookup", domain: query, status_code: data.Status,
+      answers: (data.Answer || []).map(a => ({ type: a.type, data: a.data, ttl: a.TTL })) };
+  }
+
+  // ── Main search orchestrator ─────────────────────
+
+  async function doTextSearch() {
+    const query = textInput.value.trim();
+    if (!query) return;
+    const btn = document.getElementById("searchBtn");
+    const statusEl = document.getElementById("textStatus");
+    const resultsEl = document.getElementById("textResults");
+    const headerEl = document.getElementById("textResultsHeader");
+
+    btn.disabled = true;
+    document.getElementById("tips").classList.add("hidden");
+    resultsEl.innerHTML = "";
+    headerEl.classList.add("hidden");
+    statusEl.classList.remove("hidden");
+    statusEl.className = "status";
+    statusEl.innerHTML = '<span class="spinner"></span> Searching public sources...';
+
+    const sanitized = query.slice(0, 100);
+    const isUsername = !/\s/.test(sanitized);
+
+    const tasks = [];
+    tasks.push(lookupWikipedia(sanitized));
+    if (isUsername) {
+      tasks.push(lookupGitHub(sanitized));
+      tasks.push(lookupReddit(sanitized));
+      tasks.push(lookupStackOverflow(sanitized));
+      tasks.push(lookupHackerNews(sanitized));
+      tasks.push(lookupDNS(sanitized));
+    } else {
+      tasks.push(lookupGitHubByName(sanitized));
+      tasks.push(lookupStackOverflow(sanitized));
+    }
+
+    const settled = await Promise.allSettled(tasks);
+    const results = [];
+    for (const r of settled) {
+      if (r.status === "fulfilled" && r.value !== null) {
+        if (Array.isArray(r.value)) results.push(...r.value);
+        else results.push(r.value);
+      }
+    }
+
+    statusEl.classList.add("hidden");
+    if (results.length === 0) {
+      resultsEl.innerHTML = '<div class="status" style="grid-column:1/-1">No public information found for "' + escapeHtml(query) + '"</div>';
+    } else {
+      headerEl.classList.remove("hidden");
+      headerEl.innerHTML = 'Found <strong>' + results.length + '</strong> result' + (results.length !== 1 ? 's' : '') + ' for "<strong>' + escapeHtml(sanitized) + '</strong>"';
+      for (const r of results) resultsEl.innerHTML += renderCard(r);
+    }
+    btn.disabled = false;
+  }
+
+  function renderCard(r) {
+    const avatar = r.avatar || r.thumbnail
+      ? '<img class="avatar" src="' + escapeHtml(r.avatar || r.thumbnail) + '" alt="" />'
+      : '<div class="avatar" style="display:flex;align-items:center;justify-content:center;font-size:1.3rem;color:var(--text2)">' + escapeHtml((r.name||r.source||"?")[0]) + '</div>';
+    let fields = "";
+    const skip = new Set(["source","icon","avatar","thumbnail","profile_url","name","extract","exists"]);
+    for (const [key, val] of Object.entries(r)) {
+      if (skip.has(key) || val == null || val === "") continue;
+      const label = key.replace(/_/g," ").replace(/\b\w/g, c => c.toUpperCase());
+      let display;
+      if (typeof val === "string" && val.startsWith("http")) display = '<a href="'+escapeHtml(val)+'" target="_blank" rel="noopener">'+escapeHtml(val)+'</a>';
+      else if (Array.isArray(val)) { if (!val.length) continue; display = escapeHtml(JSON.stringify(val).slice(0,200)); }
+      else if (typeof val === "boolean") display = val ? "Yes" : "No";
+      else if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}/.test(val)) display = escapeHtml(new Date(val).toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}));
+      else if (typeof val === "number") display = val.toLocaleString();
+      else display = escapeHtml(String(val));
+      fields += '<div class="card-field"><span class="label">'+escapeHtml(label)+'</span><span class="value">'+display+'</span></div>';
+    }
+    const extract = r.extract ? '<div class="extract">'+escapeHtml(r.extract)+'</div>' : "";
+    const link = r.profile_url ? '<a href="'+escapeHtml(r.profile_url)+'" target="_blank" rel="noopener" style="color:var(--accent2);text-decoration:none;font-size:0.78rem">View Profile &rarr;</a>' : "";
+    return '<div class="card"><div class="card-head">'+avatar+'<div class="info"><span class="source-badge">'+escapeHtml(r.source)+'</span><div class="name">'+escapeHtml(r.name||"Unknown")+'</div></div></div><div class="card-fields">'+fields+'</div>'+extract+'<div style="margin-top:12px">'+link+'</div></div>';
+  }
+
+  // ═══════════════════════════════════════════════════
+  //  TAB 2 — IMAGE SEARCH
+  // ═══════════════════════════════════════════════════
+
+  const dropZone = document.getElementById("dropZone");
+  const fileInput = document.getElementById("fileInput");
+
+  dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault(); dropZone.classList.remove("dragover");
+    if (e.dataTransfer.files.length) handleImageFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener("change", () => { if (fileInput.files.length) handleImageFile(fileInput.files[0]); });
+
+  // Paste from clipboard
+  document.addEventListener("paste", e => {
+    if (document.getElementById("tab-image").classList.contains("active")) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith("image/")) { handleImageFile(item.getAsFile()); return; }
+      }
+    }
+  });
+
+  async function handleImageFile(file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    uploadedFile = file;
+    document.getElementById("imgAnalysis").classList.remove("hidden");
+    document.getElementById("previewImg").src = URL.createObjectURL(file);
+    detectFaces(file);
+    readExif(file);
+  }
+
+  // ── Face Detection ────────────────────────────────
+
+  async function detectFaces(file) {
+    const faceStatus = document.getElementById("faceStatus");
+    const faceResults = document.getElementById("faceResults");
+    faceResults.innerHTML = "";
+
+    if (!modelsLoaded) {
+      faceStatus.textContent = "Waiting for models to load...";
+      await loadModels();
+      if (!modelsLoaded) { faceStatus.textContent = "Models failed to load."; return; }
+    }
+
+    faceStatus.innerHTML = '<span class="spinner"></span> Detecting faces...';
+
+    const img = await fileToImage(file);
+    const canvas = document.getElementById("faceCanvas");
+    const previewImg = document.getElementById("previewImg");
+    await new Promise(r => { if (previewImg.complete) r(); else previewImg.onload = r; });
+
+    const displayW = previewImg.clientWidth;
+    const displayH = previewImg.clientHeight;
+    canvas.width = displayW;
+    canvas.height = displayH;
+
+    const detections = await faceapi.detectAllFaces(img)
+      .withFaceLandmarks().withFaceDescriptors().withAgeAndGender().withFaceExpressions();
+
+    if (!detections.length) {
+      faceStatus.textContent = "No faces detected in this image.";
+      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    faceStatus.textContent = detections.length + " face" + (detections.length > 1 ? "s" : "") + " detected";
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const scaleX = displayW / img.naturalWidth;
+    const scaleY = displayH / img.naturalHeight;
+
+    detections.forEach((det, i) => {
+      const box = det.detection.box;
+      const x = box.x * scaleX, y = box.y * scaleY;
+      const w = box.width * scaleX, h = box.height * scaleY;
+
+      ctx.strokeStyle = "#6c5ce7"; ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+      const label = "Face " + (i + 1);
+      ctx.font = "bold 12px sans-serif";
+      const tw = ctx.measureText(label).width + 8;
+      ctx.fillStyle = "#6c5ce7"; ctx.fillRect(x, y - 20, tw, 20);
+      ctx.fillStyle = "#fff"; ctx.fillText(label, x + 4, y - 6);
+
+      ctx.fillStyle = "rgba(0,206,201,0.6)";
+      det.landmarks.positions.forEach(pt => {
+        ctx.beginPath(); ctx.arc(pt.x * scaleX, pt.y * scaleY, 1.5, 0, Math.PI * 2); ctx.fill();
+      });
+
+      const age = Math.round(det.age);
+      const gender = det.gender;
+      const genderProb = (det.genderProbability * 100).toFixed(0);
+      const expression = getExpressionLabel(det.expressions);
+
+      // Crop face
+      const cropCanvas = document.createElement("canvas");
+      const pad = 20;
+      const cx = Math.max(0, box.x - pad), cy = Math.max(0, box.y - pad);
+      const cw = Math.min(img.naturalWidth - cx, box.width + pad * 2);
+      const ch = Math.min(img.naturalHeight - cy, box.height + pad * 2);
+      cropCanvas.width = cw; cropCanvas.height = ch;
+      cropCanvas.getContext("2d").drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
+
+      faceResults.innerHTML += '<div class="face-chip">' +
+        '<img src="' + cropCanvas.toDataURL() + '" alt="Face ' + (i+1) + '" />' +
+        '<div class="details">' +
+          '<div class="primary">Face ' + (i+1) + ' &mdash; ~' + age + 'y, ' + gender + ' (' + genderProb + '%)</div>' +
+          '<div class="secondary">' + expression + '</div>' +
+          '<div class="secondary">128-dim descriptor stored</div>' +
+        '</div></div>';
+    });
+  }
+
+  // ── EXIF Reader ───────────────────────────────────
+
+  function readExif(file) {
+    const exifDiv = document.getElementById("exifResults");
+    exifDiv.innerHTML = '<span class="elabel">Reading...</span>';
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const view = new DataView(e.target.result);
+      const exif = parseBasicExif(view);
+
+      let html = '';
+      html += '<span class="elabel">File Name</span><span class="evalue">' + escapeHtml(file.name) + '</span>';
+      html += '<span class="elabel">File Size</span><span class="evalue">' + (file.size / 1024).toFixed(1) + ' KB</span>';
+      html += '<span class="elabel">Type</span><span class="evalue">' + escapeHtml(file.type) + '</span>';
+      html += '<span class="elabel">Last Modified</span><span class="evalue">' + new Date(file.lastModified).toLocaleString() + '</span>';
+
+      const tempImg = new Image();
+      tempImg.onload = function() {
+        html += '<span class="elabel">Dimensions</span><span class="evalue">' + tempImg.naturalWidth + ' x ' + tempImg.naturalHeight + ' px</span>';
+        html += '<span class="elabel">Megapixels</span><span class="evalue">' + ((tempImg.naturalWidth * tempImg.naturalHeight) / 1e6).toFixed(1) + ' MP</span>';
+        if (exif) {
+          for (const [k, v] of Object.entries(exif)) {
+            html += '<span class="elabel">' + escapeHtml(k) + '</span><span class="evalue">' + escapeHtml(String(v)) + '</span>';
+          }
+        }
+        exifDiv.innerHTML = html;
+      };
+      tempImg.src = URL.createObjectURL(file);
+    };
+    reader.readAsArrayBuffer(file.slice(0, 128 * 1024));
+  }
+
+  function parseBasicExif(view) {
+    try {
+      if (view.getUint16(0) !== 0xFFD8) return null;
+      let offset = 2;
+      while (offset < view.byteLength - 1) {
+        const marker = view.getUint16(offset);
+        if (marker === 0xFFE1) {
+          const exifStr = String.fromCharCode(view.getUint8(offset+4),view.getUint8(offset+5),view.getUint8(offset+6),view.getUint8(offset+7));
+          if (exifStr !== "Exif") return null;
+          const tiffOffset = offset + 10;
+          const littleEndian = view.getUint16(tiffOffset) === 0x4949;
+          const ifdOffset = view.getUint32(tiffOffset + 4, littleEndian);
+          const numEntries = view.getUint16(tiffOffset + ifdOffset, littleEndian);
+          const result = {};
+          const tagNames = {
+            0x010F:"Camera Make",0x0110:"Camera Model",0x0112:"Orientation",
+            0x0131:"Software",0x0132:"Date/Time",0x013B:"Artist",0x8298:"Copyright",
+            0x8769:"ExifIFD",0x9003:"Date Original",0x9004:"Date Digitized",
+            0x920A:"Focal Length",0xA405:"Focal Length (35mm)",0x829A:"Exposure Time",
+            0x829D:"F-Number",0x8827:"ISO Speed",0x9209:"Flash",
+            0xA002:"Image Width",0xA003:"Image Height"
+          };
+          function readIFD(ifdStart, max) {
+            const n = view.getUint16(tiffOffset + ifdStart, littleEndian);
+            for (let i = 0; i < Math.min(n, max); i++) {
+              const eo = tiffOffset + ifdStart + 2 + i * 12;
+              if (eo + 12 > view.byteLength) break;
+              const tag = view.getUint16(eo, littleEndian);
+              const type = view.getUint16(eo + 2, littleEndian);
+              const count = view.getUint32(eo + 4, littleEndian);
+              const vo = eo + 8;
+              const name = tagNames[tag];
+              if (!name || name === "ExifIFD") {
+                if (tag === 0x8769 && (type === 3 || type === 4)) {
+                  const sub = type === 3 ? view.getUint16(vo, littleEndian) : view.getUint32(vo, littleEndian);
+                  try { readIFD(sub, 50); } catch {}
+                }
+                continue;
+              }
+              if (type === 2 && count > 0) {
+                let so = count <= 4 ? vo : tiffOffset + view.getUint32(vo, littleEndian);
+                if (so + count <= view.byteLength) {
+                  let s = "";
+                  for (let j = 0; j < count - 1; j++) s += String.fromCharCode(view.getUint8(so + j));
+                  if (s.trim()) result[name] = s.trim();
+                }
+              } else if (type === 3) result[name] = view.getUint16(vo, littleEndian);
+              else if (type === 4) result[name] = view.getUint32(vo, littleEndian);
+            }
+          }
+          readIFD(ifdOffset, 50);
+          return Object.keys(result).length ? result : null;
+        }
+        if ((marker & 0xFF00) !== 0xFF00) break;
+        offset += 2 + view.getUint16(offset + 2);
+      }
+      return null;
+    } catch { return null; }
+  }
+
+  // ── Reverse Image Search (form submit) ────────────
+
+  function searchEngine(engine) {
+    if (!uploadedFile) { alert("Upload an image first."); return; }
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.enctype = "multipart/form-data";
+    form.target = "_blank";
+    form.style.display = "none";
+
+    const fi = document.createElement("input");
+    fi.type = "file";
+    const dt = new DataTransfer();
+    dt.items.add(uploadedFile);
+
+    switch (engine) {
+      case "google":
+        form.action = "https://www.google.com/searchbyimage/upload";
+        fi.name = "encoded_image"; fi.files = dt.files; form.appendChild(fi);
+        addHidden(form, "image_url", ""); addHidden(form, "sbisrc", "cr_1");
+        break;
+      case "yandex":
+        form.action = "https://yandex.com/images/search";
+        fi.name = "upfile"; fi.files = dt.files; form.appendChild(fi);
+        addHidden(form, "rpt", "imageview");
+        break;
+      case "tineye":
+        form.action = "https://tineye.com/search";
+        fi.name = "image"; fi.files = dt.files; form.appendChild(fi);
+        break;
+      case "bing":
+        form.action = "https://www.bing.com/images/search?view=detailv2&iss=sbiupload&FORM=SBIHMP";
+        fi.name = "imageBin"; fi.files = dt.files; form.appendChild(fi);
+        break;
+      case "baidu":
+        window.open("https://graph.baidu.com/pcpage/index?tpl_from=pc", "_blank"); return;
+      case "karmadecay":
+        window.open("http://karmadecay.com/", "_blank"); return;
+    }
+    document.body.appendChild(form); form.submit(); document.body.removeChild(form);
+  }
+
+  function addHidden(form, name, value) {
+    const inp = document.createElement("input");
+    inp.type = "hidden"; inp.name = name; inp.value = value;
+    form.appendChild(inp);
+  }
+
+  function searchAllEngines() {
+    const engines = ["google", "yandex", "bing", "tineye"];
+    let i = 0;
+    (function next() {
+      if (i >= engines.length) return;
+      searchEngine(engines[i]); i++;
+      setTimeout(next, 800);
+    })();
+  }
+
+  // ═══════════════════════════════════════════════════
+  //  TAB 3 — FACE COMPARISON
+  // ═══════════════════════════════════════════════════
+
+  function setupCompareDrop(dropId, inputId, previewId, n) {
+    const drop = document.getElementById(dropId);
+    const input = document.getElementById(inputId);
+    drop.addEventListener("dragover", e => { e.preventDefault(); drop.style.borderColor = "var(--accent)"; });
+    drop.addEventListener("dragleave", () => drop.style.borderColor = "");
+    drop.addEventListener("drop", e => {
+      e.preventDefault(); drop.style.borderColor = "";
+      if (e.dataTransfer.files.length) setCompareFile(n, e.dataTransfer.files[0]);
+    });
+    input.addEventListener("change", () => { if (input.files.length) setCompareFile(n, input.files[0]); });
+  }
+  setupCompareDrop("compareDrop1","compareInput1","comparePreview1",1);
+  setupCompareDrop("compareDrop2","compareInput2","comparePreview2",2);
+
+  function setCompareFile(n, file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    if (n === 1) compareFile1 = file; else compareFile2 = file;
+    document.getElementById("comparePreview" + n).innerHTML =
+      '<img src="' + URL.createObjectURL(file) + '" alt="Image ' + n + '" />';
+    document.getElementById("compareBtn").disabled = !(compareFile1 && compareFile2);
+    document.getElementById("compareResult").classList.add("hidden");
+  }
+
+  async function compareFaces() {
+    if (!compareFile1 || !compareFile2) return;
+    if (!modelsLoaded) { alert("Face models still loading. Please wait."); return; }
+
+    const btn = document.getElementById("compareBtn");
+    const resultDiv = document.getElementById("compareResult");
+    btn.disabled = true; btn.textContent = "Analyzing...";
+    resultDiv.classList.add("hidden");
+
+    try {
+      const [img1, img2] = await Promise.all([fileToImage(compareFile1), fileToImage(compareFile2)]);
+      const [det1, det2] = await Promise.all([
+        faceapi.detectSingleFace(img1).withFaceLandmarks().withFaceDescriptor().withAgeAndGender(),
+        faceapi.detectSingleFace(img2).withFaceLandmarks().withFaceDescriptor().withAgeAndGender(),
+      ]);
+
+      if (!det1 || !det2) {
+        resultDiv.className = "compare-result uncertain";
+        resultDiv.classList.remove("hidden");
+        resultDiv.innerHTML = '<strong>Could not detect a face in ' +
+          (!det1 && !det2 ? 'either image' : !det1 ? 'Image 1' : 'Image 2') +
+          '.</strong><br><span style="font-size:0.85rem">Make sure each image contains a clearly visible face.</span>';
+        btn.disabled = false; btn.textContent = "Compare Faces"; return;
+      }
+
+      const distance = faceapi.euclideanDistance(det1.descriptor, det2.descriptor);
+      const similarity = Math.max(0, Math.min(100, (1 - distance) * 100));
+      const isMatch = distance < 0.6;
+      const isUncertain = distance >= 0.6 && distance < 0.75;
+
+      let cls, verdict;
+      if (isMatch) { cls = "match"; verdict = "SAME PERSON"; }
+      else if (isUncertain) { cls = "uncertain"; verdict = "UNCERTAIN"; }
+      else { cls = "no-match"; verdict = "DIFFERENT PEOPLE"; }
+
+      const barColor = isMatch ? "var(--green)" : isUncertain ? "var(--orange)" : "var(--danger)";
+
+      resultDiv.className = "compare-result " + cls;
+      resultDiv.classList.remove("hidden");
+      resultDiv.innerHTML =
+        '<strong style="font-size:1.2rem">' + verdict + '</strong>' +
+        '<br><span style="font-size:0.9rem">Similarity: <strong>' + similarity.toFixed(1) + '%</strong> &nbsp;|&nbsp; Distance: ' + distance.toFixed(4) + '</span>' +
+        '<br><span style="font-size:0.82rem;opacity:0.8">Threshold: &lt; 0.60 = match, 0.60-0.75 = uncertain, &gt; 0.75 = no match</span>' +
+        '<div style="display:flex;gap:20px;justify-content:center;margin-top:12px;font-size:0.82rem;color:var(--text2)">' +
+          '<span>Face 1: ~' + Math.round(det1.age) + 'y, ' + det1.gender + '</span>' +
+          '<span>Face 2: ~' + Math.round(det2.age) + 'y, ' + det2.gender + '</span>' +
+        '</div>' +
+        '<div class="match-bar-track"><div class="match-bar-fill" style="width:'+similarity+'%;background:'+barColor+'"></div></div>';
+    } catch (err) {
+      resultDiv.className = "compare-result uncertain";
+      resultDiv.classList.remove("hidden");
+      resultDiv.innerHTML = '<strong>Error:</strong> ' + escapeHtml(err.message);
+    }
+    btn.disabled = false; btn.textContent = "Compare Faces";
+  }
+  </script>
+</body>
+</html>
