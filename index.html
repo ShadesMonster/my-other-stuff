@@ -1028,17 +1028,36 @@
 
               if (currentEvent === "engine_result") {
                 engineStatuses.push(data);
-                // Live engine status update
+                // Live engine status update with diagnostics
                 let liveHtml = '<div style="font-size:0.75rem;margin-top:6px">';
                 for (const es of engineStatuses) {
                   const icon = es.status === "ok" ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--danger)">&#10007;</span>';
-                  liveHtml += '<span style="margin-right:10px">' + icon + ' ' + escapeHtml(es.engine);
-                  if (es.status === "ok") liveHtml += ' (' + (es.match_count||0) + ')';
-                  liveHtml += '</span>';
+                  liveHtml += '<div style="margin:3px 0;display:flex;align-items:center;gap:6px">' + icon + ' <strong>' + escapeHtml(es.engine) + '</strong>';
+                  if (es.status === "ok") {
+                    liveHtml += ' &mdash; ' + (es.match_count||0) + ' matches';
+                    if (es.identified_name) liveHtml += ' &mdash; <span style="color:var(--orange)">ID: ' + escapeHtml(es.identified_name) + '</span>';
+                  } else {
+                    liveHtml += ' <span style="color:var(--danger)">' + escapeHtml(es.error || "error") + '</span>';
+                  }
+                  if (es.diag) {
+                    const d = es.diag;
+                    let diagParts = [];
+                    if (d.status) diagParts.push('HTTP ' + d.status);
+                    if (d.bodySize) diagParts.push((d.bodySize/1024).toFixed(1) + 'KB');
+                    if (d.redirects) diagParts.push(d.redirects + ' redirects');
+                    if (d.cbirId) diagParts.push('cbir:' + d.cbirId.slice(0,12));
+                    if (diagParts.length) liveHtml += ' <span style="color:var(--text2);font-size:0.7rem">(' + diagParts.join(', ') + ')</span>';
+                  }
+                  liveHtml += '</div>';
                 }
                 liveHtml += '</div>';
                 enginesEl.classList.remove("hidden");
                 enginesEl.innerHTML = liveHtml;
+              }
+
+              if (currentEvent === "phase_complete") {
+                // Phase complete summary
+                statusEl.innerHTML = '<span class="spinner"></span> Phase ' + data.phase + ' complete &mdash; ' + (data.total_matches||0) + ' matches from ' + (data.engines||0) + ' engines. Continuing...';
               }
 
               if (currentEvent === "identified") {
@@ -1077,16 +1096,27 @@
                 }
                 engHtml += '</div>';
 
-                // Show engine statuses
+                // Show engine statuses with diagnostics
                 engHtml += '<div style="margin-top:10px;font-size:0.78rem">';
                 for (const es of engineStatuses) {
                   const icon = es.status === "ok" ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--danger)">&#10007;</span>';
                   engHtml += '<div style="margin:3px 0">' + icon + ' <strong>' + escapeHtml(es.engine) + '</strong>: ';
                   if (es.status === "ok") {
-                    engHtml += escapeHtml((es.match_count || 0) + ' matches found');
-                    if (es.identified_name) engHtml += ' — identified as "' + escapeHtml(es.identified_name) + '"';
+                    engHtml += (es.match_count || 0) + ' matches found';
+                    if (es.identified_name) engHtml += ' &mdash; identified as "<span style="color:var(--orange)">' + escapeHtml(es.identified_name) + '</span>"';
                   } else {
                     engHtml += '<span style="color:var(--danger)">' + escapeHtml(es.error || "error") + '</span>';
+                  }
+                  // Diagnostic info
+                  if (es.diag) {
+                    const d = es.diag;
+                    let diagParts = [];
+                    if (d.status) diagParts.push('HTTP ' + d.status);
+                    if (d.bodySize) diagParts.push((d.bodySize/1024).toFixed(1) + 'KB');
+                    if (d.redirects) diagParts.push(d.redirects + ' redirect' + (d.redirects !== 1 ? 's' : ''));
+                    if (d.cbirId) diagParts.push('cbir_id: ' + escapeHtml(d.cbirId));
+                    if (d.finalUrl) diagParts.push('→ ' + escapeHtml(d.finalUrl.slice(0, 60)));
+                    if (diagParts.length) engHtml += ' <span style="color:var(--text2);font-size:0.7rem">(' + diagParts.join(' | ') + ')</span>';
                   }
                   engHtml += '</div>';
                 }
@@ -1111,6 +1141,10 @@
                     "ASKfm": "#DB3552", "About.me": "#00405d", "Linktree": "#43E55E",
                     "Steam": "#1b2838", "Letterboxd": "#00d735", "People Search": "#6c5ce7",
                     "Wikidata": "#006699", "Pixiv": "#0096FA", "ArtStation": "#13AFF0",
+                    "FaceCheck": "#FF6B35", "search4faces": "#4ECDC4", "Fansly": "#1DA1F2",
+                    "Pornhub": "#FFA31A", "RedGIFs": "#FF4500", "Chaturbate": "#F4A460",
+                    "ManyVids": "#EF476F", "XVideos": "#C62828", "xHamster": "#B71C1C",
+                    "Roblox": "#E2231A", "Telegram": "#0088cc",
                   };
                   for (const [platform, matches] of Object.entries(data.social_media)) {
                     const color = platformColors[platform] || "var(--accent)";

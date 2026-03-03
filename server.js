@@ -824,11 +824,16 @@ app.post("/api/upload", upload.single("image"), (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 
 
-function chainRequest(url, options = {}, depth = 0) {
+// ══════════════════════════════════════════════════════════════════════════
+//  FACE SCANNING PIPELINE v3 — DEEP SEARCH EVERYWHERE
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── Chain request with PROPER redirect tracking ─────────────────────────
+function chainRequest(startUrl, options = {}, depth = 0, _redirectChain = []) {
   return new Promise((resolve) => {
-    if (depth > 8) return resolve({ statusCode: 0, body: "", finalUrl: url, error: "too many redirects" });
+    if (depth > 10) return resolve({ statusCode: 0, body: "", startUrl, finalUrl: startUrl, redirectChain: _redirectChain, error: "too many redirects" });
     try {
-      const parsed = new URL(url);
+      const parsed = new URL(startUrl);
       const driver = parsed.protocol === "https:" ? https : http;
       const reqOpts = {
         hostname: parsed.hostname,
@@ -840,6 +845,9 @@ function chainRequest(url, options = {}, depth = 0) {
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9",
           "Accept-Encoding": "identity",
+          "Connection": "keep-alive",
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Mode": "navigate",
           ...(options.headers || {}),
         },
       };
@@ -849,10 +857,11 @@ function chainRequest(url, options = {}, depth = 0) {
           let loc = res.headers.location;
           if (loc.startsWith("/")) loc = parsed.protocol + "//" + parsed.hostname + loc;
           else if (!loc.startsWith("http")) loc = parsed.protocol + "//" + parsed.hostname + "/" + loc;
+          _redirectChain.push(loc);
           const prevCookies = options.headers?.Cookie || "";
           const newCookies = res.headers["set-cookie"]?.map(c => c.split(";")[0]).join("; ") || "";
           const allCookies = [prevCookies, newCookies].filter(Boolean).join("; ");
-          chainRequest(loc, { method: "GET", headers: { Cookie: allCookies }, timeout: options.timeout }, depth + 1).then(resolve);
+          chainRequest(loc, { method: "GET", headers: { Cookie: allCookies }, timeout: options.timeout }, depth + 1, _redirectChain).then(resolve);
           return;
         }
         const chunks = [];
@@ -860,18 +869,37 @@ function chainRequest(url, options = {}, depth = 0) {
         res.on("end", () => {
           let bodyStr;
           try { bodyStr = Buffer.concat(chunks).toString("utf-8"); } catch { bodyStr = ""; }
-          resolve({ statusCode: res.statusCode, headers: res.headers, body: bodyStr, finalUrl: url });
+          resolve({
+            statusCode: res.statusCode,
+            headers: res.headers,
+            body: bodyStr,
+            bodySize: bodyStr.length,
+            startUrl: _redirectChain.length ? _redirectChain[0] : startUrl,
+            finalUrl: startUrl,  // THIS is the URL we actually fetched (the last redirect target)
+            redirectChain: _redirectChain,
+            redirectCount: depth,
+          });
         });
       });
-      req.on("error", err => resolve({ statusCode: 0, body: "", finalUrl: url, error: err.message }));
-      req.setTimeout(options.timeout || 25000, () => { req.destroy(); resolve({ statusCode: 0, body: "", finalUrl: url, error: "timeout" }); });
+      req.on("error", err => resolve({ statusCode: 0, body: "", startUrl, finalUrl: startUrl, redirectChain: _redirectChain, error: err.message, bodySize: 0 }));
+      req.setTimeout(options.timeout || 30000, () => { req.destroy(); resolve({ statusCode: 0, body: "", startUrl, finalUrl: startUrl, redirectChain: _redirectChain, error: "timeout", bodySize: 0 }); });
       if (options.body) req.write(options.body);
       req.end();
-    } catch (err) { resolve({ statusCode: 0, body: "", finalUrl: url, error: err.message }); }
+    } catch (err) { resolve({ statusCode: 0, body: "", startUrl, finalUrl: startUrl, redirectChain: _redirectChain, error: err.message, bodySize: 0 }); }
   });
 }
 
-// ── Platform detection (40+ platforms) ──────────────────────────────────
+// Retry wrapper
+async function withRetry(fn, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    const result = await fn();
+    if (result && result.status !== "error") return result;
+    if (i < retries) await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+  }
+  return await fn();
+}
+
+// ── Platform detection (45+ platforms) ──────────────────────────────────
 
 const PLATFORM_MAP = [
   ["instagram.com", "Instagram"], ["twitter.com", "Twitter/X"], ["x.com", "Twitter/X"],
@@ -889,20 +917,19 @@ const PLATFORM_MAP = [
   ["behance.net", "Behance"], ["dribbble.com", "Dribbble"], ["500px.com", "500px"],
   ["ask.fm", "ASKfm"], ["about.me", "About.me"], ["linktree", "Linktree"],
   ["steamcommunity.com", "Steam"], ["letterboxd.com", "Letterboxd"],
-  ["namu.wiki", "NamuWiki"], ["pixiv.net", "Pixiv"], ["artstation.com", "ArtStation"],
+  ["pixiv.net", "Pixiv"], ["artstation.com", "ArtStation"],
+  ["pornhub.com", "Pornhub"], ["xvideos.com", "XVideos"], ["xhamster.com", "xHamster"],
+  ["onlyfans.com", "OnlyFans"], ["fansly.com", "Fansly"],
 ];
 
 function detectPlatform(url) {
   if (!url) return null;
   const u = url.toLowerCase();
-  for (const [domain, name] of PLATFORM_MAP) {
-    if (u.includes(domain)) return name;
-  }
+  for (const [domain, name] of PLATFORM_MAP) { if (u.includes(domain)) return name; }
   return null;
 }
 
-// ── Extract username from social media URL ──────────────────────────────
-
+// ── Username extraction from URLs ───────────────────────────────────────
 function extractUsernameFromUrl(url) {
   if (!url) return null;
   try {
@@ -915,210 +942,197 @@ function extractUsernameFromUrl(url) {
     if (host.includes("facebook.com") && !["pages", "groups", "events", "watch", "marketplace", "profile.php"].includes(parts[0])) return parts[0];
     if (host.includes("tiktok.com") && parts[0].startsWith("@")) return parts[0].slice(1);
     if (host.includes("linkedin.com") && parts[0] === "in" && parts[1]) return parts[1];
-    if (host.includes("youtube.com")) {
-      if (parts[0].startsWith("@")) return parts[0].slice(1);
-      if ((parts[0] === "c" || parts[0] === "user" || parts[0] === "channel") && parts[1]) return parts[1];
-    }
+    if (host.includes("youtube.com")) { if (parts[0].startsWith("@")) return parts[0].slice(1); if (["c","user","channel"].includes(parts[0]) && parts[1]) return parts[1]; }
     if (host.includes("reddit.com") && parts[0] === "user" && parts[1]) return parts[1];
-    if (host.includes("github.com") && !["features", "enterprise", "pricing", "login", "join", "orgs", "settings"].includes(parts[0])) return parts[0];
-    if (host.includes("pinterest.com") && !["pin", "search", "ideas", "today"].includes(parts[0])) return parts[0];
-    if (host.includes("twitch.tv") && !["directory", "videos", "settings", "downloads"].includes(parts[0])) return parts[0];
-    if (host.includes("vk.com") && !["feed", "im", "groups", "video", "music"].includes(parts[0])) return parts[0];
-    if (host.includes("flickr.com") && parts[0] === "people" && parts[1]) return parts[1];
-    if (host.includes("medium.com") && parts[0].startsWith("@")) return parts[0].slice(1);
-    if (host.includes("soundcloud.com") && !["discover", "stream", "search", "upload"].includes(parts[0])) return parts[0];
-    if (host.includes("deviantart.com") && !["search", "about", "team"].includes(parts[0])) return parts[0];
+    if (host.includes("github.com") && !["features","enterprise","pricing","login","join","orgs","settings"].includes(parts[0])) return parts[0];
+    if (host.includes("pinterest.com") && !["pin","search","ideas","today"].includes(parts[0])) return parts[0];
+    if (host.includes("twitch.tv") && !["directory","videos","settings","downloads"].includes(parts[0])) return parts[0];
+    if (host.includes("vk.com") && !["feed","im","groups","video","music"].includes(parts[0])) return parts[0];
   } catch {}
   return null;
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-//  SEARCH ENGINES — 7 engines, each submits the face and scrapes results
-// ══════════════════════════════════════════════════════════════════════════
+// Helper: extract ALL external links from HTML
+function extractLinks(html, excludeDomains = []) {
+  const results = [];
+  const seen = new Set();
+  const regex = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = regex.exec(html)) !== null) {
+    const href = m[1];
+    const hrefLower = href.toLowerCase();
+    if (seen.has(href)) continue;
+    let dominated = false;
+    for (const ex of excludeDomains) { if (hrefLower.includes(ex)) { dominated = true; break; } }
+    if (dominated) continue;
+    seen.add(href);
+    const text = m[2].replace(/<[^>]*>/g, "").trim();
+    if (text.length > 0 && text.length < 300) results.push({ title: text, url: href });
+  }
+  return results;
+}
 
-// ── 1. YANDEX (best facial recognition) ─────────────────────────────────
+// Helper: extract ALL image URLs from HTML
+function extractImages(html, excludeDomains = []) {
+  const results = [];
+  const seen = new Set();
+  const patterns = [
+    /(?:src|data-src|href)="(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp|gif)[^"]*)"/gi,
+    /\["(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp|gif)[^"]*)",\s*\d+,\s*\d+\]/gi,
+    /(?:url|image|img|photo|thumb|avatar|src)\s*[=:]\s*["'](https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp|gif)[^"']*)["']/gi,
+  ];
+  for (const pat of patterns) {
+    let m;
+    while ((m = pat.exec(html)) !== null) {
+      const url = m[1].replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\u002f/gi, "/");
+      if (seen.has(url)) continue;
+      let dominated = false;
+      for (const ex of excludeDomains) { if (url.toLowerCase().includes(ex)) { dominated = true; break; } }
+      if (dominated) continue;
+      seen.add(url);
+      results.push(url);
+    }
+  }
+  return results;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  SEARCH ENGINES — 9 engines with retry, diagnostics, deep parsing
+// ══════════════════════════════════════════════════════════════════════════
 
 async function yandexFaceScan(buffer, filename, contentType) {
   try {
     const { boundary, body } = buildMultipart({}, "upfile", buffer, filename, contentType);
     const response = await chainRequest("https://yandex.com/images/search?rpt=imageview", {
       method: "POST",
-      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString() },
-      body, timeout: 30000,
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString(), "Referer": "https://yandex.com/images/" },
+      body, timeout: 35000,
     });
     const html = response.body || "";
     const results = [];
     let identifiedName = null;
-    const tags = [];
+    const diag = { bodySize: html.length, status: response.statusCode, redirects: response.redirectCount || 0, finalUrl: response.finalUrl };
 
-    // Extract CBIR tags (Yandex face recognition — person's name)
-    const tagMatches = [...html.matchAll(/CbirTags[\s\S]{0,2000}?<\/div>/gi)];
+    // Try getting cbir_id from redirect chain
+    let cbirId = null;
+    for (const rurl of (response.redirectChain || [])) { const m = rurl.match(/cbir_id=([^&]+)/); if (m) cbirId = m[1]; }
+    if (!cbirId) { const m = (response.finalUrl || "").match(/cbir_id=([^&]+)/); if (m) cbirId = m[1]; }
+    diag.cbirId = cbirId;
+
+    // Extract CBIR tags (person name)
+    const tagMatches = [...html.matchAll(/CbirTags[\s\S]{0,3000}?<\/div>/gi)];
     for (const tm of tagMatches) {
       const links = [...tm[0].matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi)];
       for (const l of links) {
         const t = l[1].replace(/<[^>]*>/g, "").trim();
-        if (t && t.length > 1 && t.length < 80) { tags.push(t); if (!identifiedName) identifiedName = t; }
+        if (t && t.length > 1 && t.length < 80) { if (!identifiedName) identifiedName = t; }
       }
     }
 
-    // Extract from CbirSimilar section (face matches)
-    const similarSection = html.match(/CbirSimilar[\s\S]{0,80000}?(?=CbirSites|CbirOther|$)/i);
-    if (similarSection) {
-      const imgUrls = [...similarSection[0].matchAll(/(?:src|data-src|href)="(https?:\/\/[^"]+\.(jpg|jpeg|png|webp)[^"]*)"/gi)];
-      for (const iu of imgUrls.slice(0, 15)) {
-        if (!iu[1].includes("yandex.") && !iu[1].includes("avatars.mds")) {
-          results.push({ title: "Similar face", url: iu[1], thumbnail: iu[1], image_url: iu[1], source_engine: "yandex" });
-        }
-      }
-    }
-
-    // Extract serp-items (structured results)
+    // Extract serp-items
     const serpRegex = /data-bem='(\{"serp-item":\{[^']*\})'/g;
     let match;
     while ((match = serpRegex.exec(html)) !== null) {
       try {
         const decoded = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
         const data = JSON.parse(decoded)["serp-item"];
-        if (data) {
-          results.push({
-            title: data.snippet?.title || data.snippet?.text || "",
-            url: data.snippet?.url || data.img_href || "",
-            thumbnail: data.preview?.[0]?.url || data.thumb?.url || "",
-            image_url: data.img_href || "", source_engine: "yandex",
-          });
-        }
+        if (data) results.push({ title: data.snippet?.title || "", url: data.snippet?.url || data.img_href || "", thumbnail: data.preview?.[0]?.url || data.thumb?.url || "", image_url: data.img_href || "", source_engine: "yandex" });
       } catch {}
     }
 
-    // Extract CbirSites section (sites containing this image)
-    const sitesSection = html.match(/CbirSites[\s\S]{0,80000}?(?=CbirOther|CbirRelated|$)/i);
-    if (sitesSection) {
-      const siteLinks = [...sitesSection[0].matchAll(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-      for (const sl of siteLinks) {
-        if (!sl[1].includes("yandex.") && !results.some(r => r.url === sl[1])) {
-          results.push({ title: sl[2].replace(/<[^>]*>/g, "").trim().slice(0, 200), url: sl[1], source_engine: "yandex" });
-        }
-      }
+    // Extract ALL links
+    const links = extractLinks(html, ["yandex.", "yastatic."]);
+    for (const l of links) { if (!results.some(r => r.url === l.url)) results.push({ ...l, source_engine: "yandex" }); }
+
+    // Extract ALL images
+    const images = extractImages(html, ["yandex.", "yastatic.", "avatars.mds"]);
+    for (const img of images.slice(0, 20)) {
+      if (!results.some(r => r.url === img)) results.push({ title: "Yandex image match", url: img, thumbnail: img, image_url: img, source_engine: "yandex-img" });
     }
 
-    // Extract ALL external links
-    const allLinks = [...html.matchAll(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-    for (const al of allLinks) {
-      const href = al[1];
-      if (!href.includes("yandex.") && !href.includes("yastatic.") && !results.some(r => r.url === href)) {
-        const text = al[2].replace(/<[^>]*>/g, "").trim();
-        if (text && text.length > 2 && text.length < 300) {
-          results.push({ title: text, url: href, source_engine: "yandex" });
-        }
-      }
-    }
-
-    // Try Yandex JSON API if we got a cbir_id from redirect
-    const cbirMatch = response.finalUrl?.match(/cbir_id=([^&]+)/);
-    if (cbirMatch) {
+    // ── JSON API request if we got cbir_id ──
+    if (cbirId) {
       try {
-        const jsonUrl = `https://yandex.com/images/search?format=json&rpt=imageview&cbir_id=${cbirMatch[1]}`;
-        const jsonResp = await chainRequest(jsonUrl, { timeout: 15000 });
+        const jsonResp = await chainRequest(`https://yandex.com/images/search?format=json&rpt=imageview&cbir_id=${cbirId}`, { timeout: 20000 });
+        diag.jsonApiSize = (jsonResp.body || "").length;
         if (jsonResp.body) {
+          // Try parsing as JSON
           try {
             const jd = JSON.parse(jsonResp.body);
             const blocks = jd.blocks || [];
             for (const block of blocks) {
               if (block.html) {
-                const blockLinks = [...block.html.matchAll(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-                for (const bl of blockLinks) {
-                  if (!bl[1].includes("yandex.") && !results.some(r => r.url === bl[1])) {
-                    results.push({ title: bl[2].replace(/<[^>]*>/g, "").trim(), url: bl[1], source_engine: "yandex-json" });
-                  }
-                }
+                const blinks = extractLinks(block.html, ["yandex."]);
+                for (const bl of blinks) { if (!results.some(r => r.url === bl.url)) results.push({ ...bl, source_engine: "yandex-json" }); }
+                const bimgs = extractImages(block.html, ["yandex.", "yastatic."]);
+                for (const bi of bimgs.slice(0, 10)) { if (!results.some(r => r.url === bi)) results.push({ title: "Yandex similar", url: bi, thumbnail: bi, source_engine: "yandex-json" }); }
               }
             }
-          } catch {}
+          } catch {
+            // Not JSON — parse as HTML
+            const jlinks = extractLinks(jsonResp.body, ["yandex."]);
+            for (const jl of jlinks) { if (!results.some(r => r.url === jl.url)) results.push({ ...jl, source_engine: "yandex-json" }); }
+          }
         }
+      } catch {}
+
+      // ── Also try the "similar faces" API ──
+      try {
+        const facesResp = await chainRequest(`https://yandex.com/images/search?rpt=imageview&cbir_id=${cbirId}&cbir_page=similar`, { timeout: 20000 });
+        diag.facesApiSize = (facesResp.body || "").length;
+        const flinks = extractLinks(facesResp.body || "", ["yandex."]);
+        for (const fl of flinks) { if (!results.some(r => r.url === fl.url)) results.push({ ...fl, source_engine: "yandex-faces" }); }
+        const fimgs = extractImages(facesResp.body || "", ["yandex.", "yastatic."]);
+        for (const fi of fimgs.slice(0, 15)) { if (!results.some(r => r.url === fi)) results.push({ title: "Yandex face match", url: fi, thumbnail: fi, source_engine: "yandex-faces" }); }
       } catch {}
     }
 
     for (const r of results) r.platform = detectPlatform(r.url);
-    return { engine: "yandex", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, tags, matches: results.slice(0, 50) };
-  } catch (err) { return { engine: "yandex", status: "error", error: err.message, matches: [], tags: [] }; }
+    return { engine: "yandex", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 60), diag };
+  } catch (err) { return { engine: "yandex", status: "error", error: err.message, matches: [], diag: {} }; }
 }
-
-// ── 2. GOOGLE (reverse image search) ────────────────────────────────────
 
 async function googleFaceScan(buffer, filename, contentType) {
   try {
     const { boundary, body } = buildMultipart({ image_url: "", sbisrc: "cr_1" }, "encoded_image", buffer, filename, contentType);
     const response = await chainRequest("https://www.google.com/searchbyimage/upload", {
       method: "POST",
-      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString() },
-      body, timeout: 30000,
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString(), "Referer": "https://www.google.com/" },
+      body, timeout: 35000,
     });
     const html = response.body || "";
     const results = [];
     let identifiedName = null;
+    const diag = { bodySize: html.length, status: response.statusCode, redirects: response.redirectCount || 0, finalUrl: response.finalUrl };
 
-    // Entity identification patterns
-    const entityPatterns = [
-      /Results for[:\s]*<[^>]*>([^<]+)/i, /Possible related search[:\s]*<[^>]*>([^<]+)/i,
-      /data-attrid="title"[^>]*>([^<]+)/i, /"kc_nm"[^>]*>([^<]+)/i,
-      /aria-level="3"[^>]*>([^<]{2,60})<\/[^>]*>/i, /<div[^>]*class="[^"]*SDkEP[^"]*"[^>]*>([^<]+)/i,
-    ];
-    for (const pat of entityPatterns) {
+    // Entity identification — many patterns
+    for (const pat of [
+      /Results for[:\s]*<[^>]*>([^<]+)/i, /data-attrid="title"[^>]*>([^<]+)/i,
+      /"kc_nm"[^>]*>([^<]+)/i, /aria-level="3"[^>]*>([^<]{2,60})<\//i,
+      /class="[^"]*SDkEP[^"]*"[^>]*>([^<]+)/i, /Possible related search[:\s]*<[^>]*>([^<]+)/i,
+      /class="[^"]*fKDtNb[^"]*"[^>]*>([^<]+)/i, /class="[^"]*r5a77d[^"]*"[^>]*>([^<]+)/i,
+    ]) {
       const m = html.match(pat);
-      if (m && !identifiedName) {
-        const name = m[1].trim();
-        if (name.length > 1 && name.length < 60 && !name.includes("<")) identifiedName = name;
-      }
+      if (m && !identifiedName) { const n = m[1].trim(); if (n.length > 1 && n.length < 60 && !n.includes("<")) identifiedName = n; }
     }
 
-    // Extract search result blocks
-    const resultBlocks = html.split(/<div[^>]*class="[^"]*\bg\b[^"]*"/i);
-    for (const block of resultBlocks.slice(1, 30)) {
-      const linkMatch = block.match(/<a[^>]+href="(https?:\/\/(?!www\.google\.)[^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
-      if (linkMatch) {
-        const snippetMatch = block.match(/<span[^>]*class="[^"]*st[^"]*"[^>]*>([\s\S]*?)<\/span>/i);
-        results.push({
-          title: linkMatch[2].replace(/<[^>]*>/g, "").trim().slice(0, 200),
-          url: linkMatch[1],
-          snippet: snippetMatch ? snippetMatch[1].replace(/<[^>]*>/g, "").trim().slice(0, 200) : "",
-          source_engine: "google",
-        });
-      }
+    // Extract links and images
+    const links = extractLinks(html, ["google.com", "gstatic.com", "googleapis.com", "youtube.com/embed"]);
+    for (const l of links) results.push({ ...l, source_engine: "google" });
+    const images = extractImages(html, ["gstatic.com", "google.com", "googleapis.com"]);
+    for (const img of images.slice(0, 20)) {
+      if (!results.some(r => r.url === img)) results.push({ title: "Google visual match", url: img, thumbnail: img, source_engine: "google-img" });
     }
-
-    // Extract ALL non-google links
-    const allLinks = [...html.matchAll(/<a[^>]+href="(https?:\/\/(?!(?:www\.)?google\.)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-    for (const al of allLinks) {
-      if (!al[1].includes("google.com") && !al[1].includes("gstatic.com") && !al[1].includes("googleapis.com") && !results.some(r => r.url === al[1])) {
-        const text = al[2].replace(/<[^>]*>/g, "").trim();
-        if (text.length > 1 && text.length < 300) results.push({ title: text, url: al[1], source_engine: "google" });
-      }
-    }
-
-    // Extract image URLs from JS arrays
-    const imgRegex = /\["(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp|gif)[^"]*)",\s*(\d+),\s*(\d+)\]/gi;
-    while ((match = imgRegex.exec(html)) !== null) {
-      const imgUrl = match[1].replace(/\\u003d/g, "=").replace(/\\u0026/g, "&");
-      if (!imgUrl.includes("gstatic.com") && !imgUrl.includes("google.com") && !results.some(r => r.url === imgUrl)) {
-        results.push({ title: "Visual match", url: imgUrl, thumbnail: imgUrl, image_url: imgUrl, source_engine: "google-img" });
-      }
-    }
-
-    // Extract /url?q= redirects
-    const redirectLinks = [...html.matchAll(/\/url\?[^"]*q=(https?(?:%3A|:)[^&"]+)/gi)];
-    for (const rl of redirectLinks) {
+    // Google /url?q= redirects
+    for (const rl of [...html.matchAll(/\/url\?[^"]*q=(https?(?:%3A|:)[^&"]+)/gi)]) {
       const decoded = decodeURIComponent(rl[1]);
-      if (!decoded.includes("google.com") && !results.some(r => r.url === decoded)) {
-        results.push({ title: "Google result", url: decoded, source_engine: "google" });
-      }
+      if (!decoded.includes("google.com") && !results.some(r => r.url === decoded)) results.push({ title: "Google result", url: decoded, source_engine: "google" });
     }
 
     for (const r of results) r.platform = detectPlatform(r.url);
-    return { engine: "google", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 50) };
-  } catch (err) { return { engine: "google", status: "error", error: err.message, matches: [] }; }
+    return { engine: "google", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 60), diag };
+  } catch (err) { return { engine: "google", status: "error", error: err.message, matches: [], diag: {} }; }
 }
-
-// ── 3. BING VISUAL SEARCH ──────────────────────────────────────────────
 
 async function bingFaceScan(buffer, filename, contentType) {
   try {
@@ -1126,50 +1140,24 @@ async function bingFaceScan(buffer, filename, contentType) {
     const response = await chainRequest("https://www.bing.com/images/search?view=detailv2&iss=sbiupload&FORM=SBIHMP&sbifnm=" + encodeURIComponent(filename), {
       method: "POST",
       headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString() },
-      body, timeout: 30000,
+      body, timeout: 35000,
     });
     const html = response.body || "";
     const results = [];
     let identifiedName = null;
-
+    const diag = { bodySize: html.length, status: response.statusCode, redirects: response.redirectCount || 0, finalUrl: response.finalUrl };
     const entityMatch = html.match(/class="[^"]*entity[^"]*"[\s\S]*?<a[^>]*>([^<]+)/i) || html.match(/<h2[^>]*>([^<]{2,60})<\/h2>/i);
     if (entityMatch) identifiedName = entityMatch[1].trim();
-
-    // All non-bing links
-    const allLinks = [...html.matchAll(/<a[^>]+href="(https?:\/\/(?!(?:www\.)?bing\.)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-    for (const al of allLinks) {
-      if (!al[1].includes("bing.com") && !al[1].includes("microsoft.com") && !al[1].includes("msn.com") && !results.some(r => r.url === al[1])) {
-        const text = al[2].replace(/<[^>]*>/g, "").trim();
-        if (text.length > 1 && text.length < 300) results.push({ title: text, url: al[1], source_engine: "bing" });
-      }
+    const links = extractLinks(html, ["bing.com", "microsoft.com", "msn.com"]);
+    for (const l of links) results.push({ ...l, source_engine: "bing" });
+    const images = extractImages(html, ["bing.com", "bing.net", "microsoft.com"]);
+    for (const img of images.slice(0, 20)) {
+      if (!results.some(r => r.url === img)) results.push({ title: "Bing visual match", url: img, thumbnail: img, source_engine: "bing-img" });
     }
-
-    // Image results from Bing's JSON-encoded data
-    const imgRegex = /murl&quot;:&quot;(https?:\/\/[^&]+)&quot;/gi;
-    let match;
-    while ((match = imgRegex.exec(html)) !== null) {
-      const imgUrl = match[1].replace(/\\u002f/gi, "/");
-      if (!results.some(r => r.url === imgUrl)) {
-        results.push({ title: "Bing visual match", url: imgUrl, thumbnail: imgUrl, image_url: imgUrl, source_engine: "bing-img" });
-      }
-    }
-
-    // JSON-LD
-    const jsonLdMatches = [...html.matchAll(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)];
-    for (const jm of jsonLdMatches) {
-      try {
-        const ld = JSON.parse(jm[1]);
-        if (ld.name && !identifiedName) identifiedName = ld.name;
-        if (ld.url && !results.some(r => r.url === ld.url)) results.push({ title: ld.name || "Bing result", url: ld.url, source_engine: "bing" });
-      } catch {}
-    }
-
     for (const r of results) r.platform = detectPlatform(r.url);
-    return { engine: "bing", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 40) };
-  } catch (err) { return { engine: "bing", status: "error", error: err.message, matches: [] }; }
+    return { engine: "bing", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 50), diag };
+  } catch (err) { return { engine: "bing", status: "error", error: err.message, matches: [], diag: {} }; }
 }
-
-// ── 4. TINEYE ───────────────────────────────────────────────────────────
 
 async function tineyeFaceScan(buffer, filename, contentType) {
   try {
@@ -1177,38 +1165,19 @@ async function tineyeFaceScan(buffer, filename, contentType) {
     const response = await chainRequest("https://tineye.com/search", {
       method: "POST",
       headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString() },
-      body, timeout: 30000,
+      body, timeout: 35000,
     });
     const html = response.body || "";
     const results = [];
-    const matchPatterns = [
-      /<a[^>]+class="[^"]*match-link[^"]*"[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
-      /<p[^>]*class="[^"]*match[^"]*"[\s\S]*?<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
-      /<div[^>]*class="[^"]*result[^"]*"[\s\S]*?<a[^>]+href="(https?:\/\/(?!tineye\.)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
-    ];
-    for (const pat of matchPatterns) {
-      let match;
-      while ((match = pat.exec(html)) !== null) {
-        if (!results.some(r => r.url === match[1])) {
-          results.push({ title: match[2].replace(/<[^>]*>/g, "").trim() || "TinEye match", url: match[1], source_engine: "tineye" });
-        }
-      }
-    }
-    // All non-tineye links
-    const allLinks = [...html.matchAll(/<a[^>]+href="(https?:\/\/(?!(?:www\.)?tineye\.)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-    for (const al of allLinks) {
-      if (!results.some(r => r.url === al[1])) {
-        const text = al[2].replace(/<[^>]*>/g, "").trim();
-        if (text.length > 0) results.push({ title: text, url: al[1], source_engine: "tineye" });
-      }
-    }
+    const diag = { bodySize: html.length, status: response.statusCode, finalUrl: response.finalUrl };
+    const links = extractLinks(html, ["tineye.com"]);
+    for (const l of links) results.push({ ...l, source_engine: "tineye" });
     const countMatch = html.match(/(\d+)\s*(?:results?|matches?)/i);
+    diag.totalMatches = countMatch ? parseInt(countMatch[1]) : 0;
     for (const r of results) r.platform = detectPlatform(r.url);
-    return { engine: "tineye", status: "ok", results_url: response.finalUrl, total_matches: countMatch ? parseInt(countMatch[1]) : results.length, matches: results.slice(0, 30) };
-  } catch (err) { return { engine: "tineye", status: "error", error: err.message, matches: [] }; }
+    return { engine: "tineye", status: "ok", results_url: response.finalUrl, total_matches: diag.totalMatches, matches: results.slice(0, 30), diag };
+  } catch (err) { return { engine: "tineye", status: "error", error: err.message, matches: [], diag: {} }; }
 }
-
-// ── 5. BAIDU (Chinese search engine with face recognition) ──────────────
 
 async function baiduFaceScan(buffer, filename, contentType) {
   try {
@@ -1216,37 +1185,31 @@ async function baiduFaceScan(buffer, filename, contentType) {
     const response = await chainRequest("https://graph.baidu.com/upload", {
       method: "POST",
       headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString() },
-      body, timeout: 30000,
+      body, timeout: 35000,
     });
     const results = [];
     let identifiedName = null;
+    const diag = { bodySize: (response.body || "").length, status: response.statusCode, finalUrl: response.finalUrl };
     try {
       const json = JSON.parse(response.body);
       if (json.data?.url) {
-        const pageResp = await chainRequest(json.data.url, { timeout: 20000 });
+        const pageResp = await chainRequest(json.data.url, { timeout: 25000 });
+        diag.pageSize = (pageResp.body || "").length;
         const html = pageResp.body || "";
         const nameMatch = html.match(/"name"\s*:\s*"([^"]+)"/i) || html.match(/class="[^"]*card-title[^"]*"[^>]*>([^<]+)/i);
         if (nameMatch) identifiedName = nameMatch[1].trim();
-        const links = [...html.matchAll(/<a[^>]+href="(https?:\/\/(?!(?:www\.)?baidu\.)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-        for (const l of links) {
-          if (!l[1].includes("baidu.com") && !l[1].includes("bdstatic.com")) {
-            results.push({ title: l[2].replace(/<[^>]*>/g, "").trim(), url: l[1], source_engine: "baidu" });
-          }
-        }
-        const jsonData = [...html.matchAll(/"url"\s*:\s*"(https?:\/\/[^"]+)"/gi)];
-        for (const jd of jsonData) {
-          if (!jd[1].includes("baidu.com") && !results.some(r => r.url === jd[1])) {
-            results.push({ title: "Baidu match", url: jd[1], source_engine: "baidu" });
-          }
+        const links = extractLinks(html, ["baidu.com", "bdstatic.com", "bdimg.com"]);
+        for (const l of links) results.push({ ...l, source_engine: "baidu" });
+        const images = extractImages(html, ["baidu.com", "bdstatic.com", "bdimg.com"]);
+        for (const img of images.slice(0, 15)) {
+          if (!results.some(r => r.url === img)) results.push({ title: "Baidu match", url: img, thumbnail: img, source_engine: "baidu" });
         }
       }
     } catch {}
     for (const r of results) r.platform = detectPlatform(r.url);
-    return { engine: "baidu", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 30) };
-  } catch (err) { return { engine: "baidu", status: "error", error: err.message, matches: [] }; }
+    return { engine: "baidu", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 30), diag };
+  } catch (err) { return { engine: "baidu", status: "error", error: err.message, matches: [], diag: {} }; }
 }
-
-// ── 6. SAUCENAO (multi-site image search) ───────────────────────────────
 
 async function saucenaoFaceScan(buffer, filename, contentType) {
   try {
@@ -1254,27 +1217,17 @@ async function saucenaoFaceScan(buffer, filename, contentType) {
     const response = await chainRequest("https://saucenao.com/search.php", {
       method: "POST",
       headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString() },
-      body, timeout: 30000,
+      body, timeout: 35000,
     });
     const html = response.body || "";
     const results = [];
-    const resultBlocks = html.split(/class="result"/i);
-    for (const block of resultBlocks.slice(1, 20)) {
-      const links = [...block.matchAll(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-      const simMatch = block.match(/(\d+(?:\.\d+)?)\s*%/);
-      const similarity = simMatch ? parseFloat(simMatch[1]) : 0;
-      for (const l of links) {
-        if (!l[1].includes("saucenao.com") && !results.some(r => r.url === l[1])) {
-          results.push({ title: l[2].replace(/<[^>]*>/g, "").trim() || "SauceNAO match", url: l[1], similarity, source_engine: "saucenao" });
-        }
-      }
-    }
+    const diag = { bodySize: html.length, status: response.statusCode };
+    const links = extractLinks(html, ["saucenao.com"]);
+    for (const l of links) results.push({ ...l, source_engine: "saucenao" });
     for (const r of results) r.platform = detectPlatform(r.url);
-    return { engine: "saucenao", status: "ok", results_url: response.finalUrl, matches: results.slice(0, 20) };
-  } catch (err) { return { engine: "saucenao", status: "error", error: err.message, matches: [] }; }
+    return { engine: "saucenao", status: "ok", results_url: response.finalUrl, matches: results.slice(0, 20), diag };
+  } catch (err) { return { engine: "saucenao", status: "error", error: err.message, matches: [], diag: {} }; }
 }
-
-// ── 7. KARMA DECAY (Reddit reverse image search) ───────────────────────
 
 async function karmaDecayScan(buffer, filename, contentType) {
   try {
@@ -1284,52 +1237,102 @@ async function karmaDecayScan(buffer, filename, contentType) {
       headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString() },
       body, timeout: 25000,
     });
-    const html = response.body || "";
     const results = [];
-    const redditLinks = [...html.matchAll(/<a[^>]+href="(https?:\/\/(?:www\.)?reddit\.com\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
-    for (const rl of redditLinks) {
-      if (!results.some(r => r.url === rl[1])) {
-        results.push({ title: rl[2].replace(/<[^>]*>/g, "").trim(), url: rl[1], platform: "Reddit", source_engine: "karmadecay" });
+    const diag = { bodySize: (response.body || "").length, status: response.statusCode };
+    const links = extractLinks(response.body || "", ["karmadecay.com"]);
+    for (const l of links) results.push({ ...l, platform: detectPlatform(l.url), source_engine: "karmadecay" });
+    return { engine: "karmadecay", status: "ok", matches: results.slice(0, 10), diag };
+  } catch (err) { return { engine: "karmadecay", status: "error", error: err.message, matches: [], diag: {} }; }
+}
+
+// ── 8. FACECHECK.ID (dedicated face search engine) ─────────────────────
+
+async function faceCheckScan(buffer, filename, contentType) {
+  try {
+    const { boundary, body } = buildMultipart({}, "images", buffer, filename, contentType);
+    const response = await chainRequest("https://facecheck.id/api/upload", {
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString(), "Referer": "https://facecheck.id", "Origin": "https://facecheck.id" },
+      body, timeout: 40000,
+    });
+    const results = [];
+    const diag = { bodySize: (response.body || "").length, status: response.statusCode, finalUrl: response.finalUrl };
+
+    // Try parsing response
+    const html = response.body || "";
+    try {
+      const json = JSON.parse(html);
+      if (json.id_search) diag.searchId = json.id_search;
+      if (json.faces) {
+        for (const face of (Array.isArray(json.faces) ? json.faces : [json.faces])) {
+          if (face.url) results.push({ title: "FaceCheck match", url: face.url, thumbnail: face.base64 || "", source_engine: "facecheck" });
+        }
+      }
+    } catch {
+      // Not JSON, try HTML parsing
+      const links = extractLinks(html, ["facecheck.id"]);
+      for (const l of links) results.push({ ...l, source_engine: "facecheck" });
+      const images = extractImages(html, ["facecheck.id"]);
+      for (const img of images.slice(0, 20)) {
+        if (!results.some(r => r.url === img)) results.push({ title: "FaceCheck match", url: img, thumbnail: img, source_engine: "facecheck" });
       }
     }
-    return { engine: "karmadecay", status: "ok", matches: results.slice(0, 10) };
-  } catch (err) { return { engine: "karmadecay", status: "error", error: err.message, matches: [] }; }
+
+    for (const r of results) r.platform = detectPlatform(r.url);
+    return { engine: "facecheck", status: "ok", results_url: response.finalUrl, matches: results.slice(0, 30), diag };
+  } catch (err) { return { engine: "facecheck", status: "error", error: err.message, matches: [], diag: {} }; }
+}
+
+// ── 9. SEARCH4FACES (VK/OK face search) ────────────────────────────────
+
+async function search4facesScan(buffer, filename, contentType) {
+  try {
+    const { boundary, body } = buildMultipart({}, "photo", buffer, filename, contentType);
+    const response = await chainRequest("https://search4faces.com/search", {
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString(), "Referer": "https://search4faces.com", "Origin": "https://search4faces.com" },
+      body, timeout: 40000,
+    });
+    const results = [];
+    const html = response.body || "";
+    const diag = { bodySize: html.length, status: response.statusCode, finalUrl: response.finalUrl };
+    const links = extractLinks(html, ["search4faces.com"]);
+    for (const l of links) results.push({ ...l, source_engine: "search4faces" });
+    const images = extractImages(html, ["search4faces.com"]);
+    for (const img of images.slice(0, 20)) {
+      if (!results.some(r => r.url === img)) results.push({ title: "search4faces match", url: img, thumbnail: img, source_engine: "search4faces" });
+    }
+    // Look for VK/OK profile links specifically
+    for (const m of [...html.matchAll(/(?:vk\.com|ok\.ru)\/[^\s"'<]+/gi)]) {
+      const url = "https://" + m[0];
+      if (!results.some(r => r.url === url)) results.push({ title: "Face match", url, source_engine: "search4faces", platform: url.includes("vk.com") ? "VK" : "Odnoklassniki" });
+    }
+    for (const r of results) if (!r.platform) r.platform = detectPlatform(r.url);
+    return { engine: "search4faces", status: "ok", results_url: response.finalUrl, matches: results.slice(0, 30), diag };
+  } catch (err) { return { engine: "search4faces", status: "error", error: err.message, matches: [], diag: {} }; }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  SOCIAL MEDIA DEEP SEARCH — name + username based
+//  DEEP SOCIAL + WEB SEARCH — text-based image hunting
 // ══════════════════════════════════════════════════════════════════════════
 
-async function deepSocialSearch(name) {
-  if (!name) return [];
-  const sites = [
-    "instagram.com", "twitter.com", "x.com", "facebook.com", "linkedin.com",
-    "tiktok.com", "youtube.com", "pinterest.com", "reddit.com", "tumblr.com",
-    "vk.com", "flickr.com", "deviantart.com", "twitch.tv", "snapchat.com",
-    "threads.net", "medium.com", "quora.com", "github.com", "spotify.com",
-    "soundcloud.com", "myspace.com", "behance.net", "dribbble.com", "500px.com",
-    "ok.ru", "ask.fm", "about.me", "patreon.com", "imdb.com", "wikipedia.org",
-  ];
+// DuckDuckGo image-specific site-scoped searches
+async function deepSiteImageSearch(name, sites) {
   const allResults = [];
-  // Process in batches of 6
-  for (let i = 0; i < sites.length; i += 6) {
-    const batch = sites.slice(i, i + 6);
+  for (let i = 0; i < sites.length; i += 4) {
+    const batch = sites.slice(i, i + 4);
     const batchResults = await Promise.allSettled(
       batch.map(async (site) => {
-        const webResults = await scrapeWebSearch(`"${name}" site:${site}`);
-        return webResults.slice(0, 3).map(r => ({
-          title: r.title, url: r.url, snippet: r.snippet,
-          source_engine: "ddg-social", platform: detectPlatform(r.url),
-        }));
+        const wr = await scrapeWebSearch(`"${name}" site:${site}`);
+        return wr.slice(0, 5).map(r => ({ title: r.title, url: r.url, snippet: r.snippet, source_engine: "ddg-site", platform: detectPlatform(r.url) }));
       })
     );
-    for (const br of batchResults) {
-      if (br.status === "fulfilled") allResults.push(...br.value);
-    }
+    for (const br of batchResults) { if (br.status === "fulfilled") allResults.push(...br.value); }
   }
   return allResults;
 }
 
+// Cross-check username across platforms
 async function crossCheckUsername(username) {
   if (!username || username.length < 2 || username.length > 40) return [];
   const profiles = [
@@ -1348,30 +1351,25 @@ async function crossCheckUsername(username) {
     { name: "DeviantArt", url: `https://www.deviantart.com/${username}` },
     { name: "Flickr", url: `https://www.flickr.com/people/${username}/` },
     { name: "SoundCloud", url: `https://soundcloud.com/${username}` },
-    { name: "Spotify", url: `https://open.spotify.com/user/${username}` },
     { name: "VK", url: `https://vk.com/${username}` },
     { name: "Dribbble", url: `https://dribbble.com/${username}` },
-    { name: "Behance", url: `https://www.behance.net/${username}` },
     { name: "500px", url: `https://500px.com/p/${username}` },
-    { name: "About.me", url: `https://about.me/${username}` },
     { name: "Patreon", url: `https://www.patreon.com/${username}` },
-    { name: "Letterboxd", url: `https://letterboxd.com/${username}/` },
     { name: "Steam", url: `https://steamcommunity.com/id/${username}` },
     { name: "Threads", url: `https://www.threads.net/@${username}` },
     { name: "Bluesky", url: `https://bsky.app/profile/${username}` },
     { name: "Snapchat", url: `https://www.snapchat.com/add/${username}` },
-    { name: "ASKfm", url: `https://ask.fm/${username}` },
     { name: "Linktree", url: `https://linktr.ee/${username}` },
+    { name: "OnlyFans", url: `https://onlyfans.com/${username}` },
+    { name: "Fansly", url: `https://fansly.com/${username}` },
   ];
   const found = [];
   for (let i = 0; i < profiles.length; i += 10) {
     const batch = profiles.slice(i, i + 10);
-    const results = await Promise.allSettled(
-      batch.map(async (p) => {
-        const status = await getCheck(p.url, 6000);
-        return { ...p, exists: status >= 200 && status < 400, status };
-      })
-    );
+    const results = await Promise.allSettled(batch.map(async (p) => {
+      const status = await getCheck(p.url, 6000);
+      return { ...p, exists: status >= 200 && status < 400, status };
+    }));
     for (const r of results) {
       if (r.status === "fulfilled" && r.value.exists) {
         found.push({ title: `${r.value.name}: @${username}`, url: r.value.url, platform: r.value.name, source_engine: "username-check" });
@@ -1381,48 +1379,8 @@ async function crossCheckUsername(username) {
   return found;
 }
 
-async function searchNameVariations(name) {
-  if (!name) return [];
-  const results = [];
-  const parts = name.toLowerCase().split(/\s+/);
-  const guesses = new Set();
-  if (parts.length >= 2) {
-    guesses.add(parts.join("")); guesses.add(parts.join(".")); guesses.add(parts.join("_"));
-    guesses.add(parts[0] + parts[parts.length - 1][0]);
-    guesses.add(parts[0][0] + parts[parts.length - 1]);
-    guesses.add(parts[0]); guesses.add(parts[parts.length - 1]);
-  }
-  const topGuesses = [...guesses].slice(0, 3);
-  const guessResults = await Promise.allSettled(topGuesses.map(g => crossCheckUsername(g)));
-  for (const gr of guessResults) {
-    if (gr.status === "fulfilled") results.push(...gr.value);
-  }
-  // General web search for name
-  try {
-    const webResults = await scrapeWebSearch(`"${name}" social media profile`);
-    for (const wr of webResults.slice(0, 5)) {
-      results.push({ title: wr.title, url: wr.url, snippet: wr.snippet, source_engine: "web-name", platform: detectPlatform(wr.url) });
-    }
-  } catch {}
-  // People-search sites
-  const peopleSites = [
-    `"${name}" site:spokeo.com`, `"${name}" site:whitepages.com`,
-    `"${name}" site:pipl.com`, `"${name}" site:peekyou.com`,
-    `"${name}" site:socialblade.com`,
-  ];
-  for (const q of peopleSites) {
-    try {
-      const wr = await scrapeWebSearch(q);
-      for (const r of wr.slice(0, 2)) {
-        results.push({ title: r.title, url: r.url, snippet: r.snippet, source_engine: "people-search", platform: detectPlatform(r.url) || "People Search" });
-      }
-    } catch {}
-  }
-  return results;
-}
-
 // ══════════════════════════════════════════════════════════════════════════
-//  API ENDPOINTS — Face scan + image proxy
+//  API ENDPOINTS
 // ══════════════════════════════════════════════════════════════════════════
 
 app.get("/api/proxy-image", (req, res) => {
@@ -1438,13 +1396,7 @@ app.get("/api/proxy-image", (req, res) => {
       if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
         const loc = proxyRes.headers.location.startsWith("/") ? parsed.protocol + "//" + parsed.hostname + proxyRes.headers.location : proxyRes.headers.location;
         proxyRes.resume();
-        try {
-          (new URL(loc).protocol === "https:" ? https : http).get(loc, { headers: { "User-Agent": "Mozilla/5.0" } }, (rRes) => {
-            res.setHeader("Content-Type", rRes.headers["content-type"] || "image/jpeg");
-            res.setHeader("Cache-Control", "public, max-age=3600");
-            rRes.pipe(res);
-          }).on("error", () => res.status(502).end());
-        } catch { res.status(502).end(); }
+        try { (new URL(loc).protocol === "https:" ? https : http).get(loc, { headers: { "User-Agent": "Mozilla/5.0" } }, (rRes) => { res.setHeader("Content-Type", rRes.headers["content-type"] || "image/jpeg"); res.setHeader("Cache-Control", "public, max-age=3600"); rRes.pipe(res); }).on("error", () => res.status(502).end()); } catch { res.status(502).end(); }
         return;
       }
       res.setHeader("Content-Type", proxyRes.headers["content-type"] || "image/jpeg");
@@ -1457,7 +1409,7 @@ app.get("/api/proxy-image", (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════
-//  MAIN FACE SCAN ENDPOINT — 6 phases, searches EVERYWHERE
+//  MAIN FACE SCAN — 8 phases, 9 engines, DEEP search everywhere
 // ══════════════════════════════════════════════════════════════════════════
 
 app.post("/api/face-scan", async (req, res) => {
@@ -1470,6 +1422,10 @@ app.post("/api/face-scan", async (req, res) => {
   const filename = `face_${Date.now()}.${ext}`;
   const contentType = `image/${matches[1]}`;
 
+  // Save face to disk for potential reuse
+  const facePath = path.join(UPLOADS_DIR, filename);
+  fs.writeFileSync(facePath, buffer);
+
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -1480,20 +1436,22 @@ app.post("/api/face-scan", async (req, res) => {
   const foundUsernames = new Set();
   const engineStatuses = [];
 
-  // ── Phase 1: Submit to ALL 7 reverse image engines simultaneously ──
-  send("phase", { phase: 1, label: "Scanning face across 7 search engines (Google, Yandex, Bing, TinEye, Baidu, SauceNAO, KarmaDecay)..." });
+  // ── Phase 1: Submit to ALL 9 search engines ──
+  send("phase", { phase: 1, label: "Submitting face to 9 search engines (Google, Yandex, Bing, TinEye, Baidu, SauceNAO, KarmaDecay, FaceCheck, search4faces)..." });
 
   const phase1 = await Promise.allSettled([
-    yandexFaceScan(buffer, filename, contentType),
-    googleFaceScan(buffer, filename, contentType),
-    bingFaceScan(buffer, filename, contentType),
-    tineyeFaceScan(buffer, filename, contentType),
-    baiduFaceScan(buffer, filename, contentType),
+    withRetry(() => yandexFaceScan(buffer, filename, contentType)),
+    withRetry(() => googleFaceScan(buffer, filename, contentType)),
+    withRetry(() => bingFaceScan(buffer, filename, contentType)),
+    withRetry(() => tineyeFaceScan(buffer, filename, contentType)),
+    withRetry(() => baiduFaceScan(buffer, filename, contentType)),
     saucenaoFaceScan(buffer, filename, contentType),
     karmaDecayScan(buffer, filename, contentType),
+    faceCheckScan(buffer, filename, contentType),
+    search4facesScan(buffer, filename, contentType),
   ]);
 
-  const engineNames = ["yandex", "google", "bing", "tineye", "baidu", "saucenao", "karmadecay"];
+  const engineNames = ["yandex", "google", "bing", "tineye", "baidu", "saucenao", "karmadecay", "facecheck", "search4faces"];
   for (let i = 0; i < phase1.length; i++) {
     const r = phase1[i];
     const val = r.status === "fulfilled" ? r.value : { engine: engineNames[i], status: "error", error: "Failed", matches: [] };
@@ -1505,97 +1463,138 @@ app.post("/api/face-scan", async (req, res) => {
         if (un && un.length > 1 && un.length < 40 && !/^\d+$/.test(un)) foundUsernames.add(un);
       }
     }
-    engineStatuses.push({
+    const es = {
       engine: val.engine || engineNames[i], status: val.status, match_count: val.matches?.length || 0,
       identified_name: val.identified_name, results_url: val.results_url, error: val.error,
-    });
-    send("engine_result", engineStatuses[engineStatuses.length - 1]);
+      diag: val.diag || {},
+    };
+    engineStatuses.push(es);
+    send("engine_result", es);
   }
   send("phase_complete", { phase: 1, engines: engineStatuses.length, total_matches: allMatches.length });
 
-  // ── Phase 2: Deep search across 31 social platforms by name ──
+  // ── Phase 2: Deep social platform search by name (31 platforms) ──
   if (identifiedName) {
-    send("phase", { phase: 2, label: `Person identified: "${identifiedName}" — searching 31 social platforms...` });
+    send("phase", { phase: 2, label: `Identified: "${identifiedName}" — deep searching 31+ social platforms...` });
     send("identified", { name: identifiedName });
-    const socialResults = await deepSocialSearch(identifiedName);
-    if (socialResults.length) {
-      allMatches.push(...socialResults);
-      send("social_results", { results: socialResults, count: socialResults.length });
-    }
+    const socialSites = [
+      "instagram.com", "twitter.com", "x.com", "facebook.com", "linkedin.com",
+      "tiktok.com", "youtube.com", "pinterest.com", "reddit.com", "tumblr.com",
+      "vk.com", "flickr.com", "deviantart.com", "twitch.tv", "snapchat.com",
+      "threads.net", "medium.com", "quora.com", "github.com", "spotify.com",
+      "soundcloud.com", "myspace.com", "behance.net", "dribbble.com", "500px.com",
+      "ok.ru", "ask.fm", "about.me", "patreon.com", "imdb.com", "wikipedia.org",
+    ];
+    const socialResults = await deepSiteImageSearch(identifiedName, socialSites);
+    if (socialResults.length) { allMatches.push(...socialResults); send("social_results", { results: socialResults, count: socialResults.length }); }
   } else {
     send("phase", { phase: 2, label: "No name identified — skipping name-based social search" });
   }
 
-  // ── Phase 3: Cross-check usernames found in results across 29 platforms ──
+  // ── Phase 3: Username cross-check (26 platforms per username) ──
   const uniqueUsernames = [...foundUsernames].slice(0, 5);
   if (uniqueUsernames.length) {
-    send("phase", { phase: 3, label: `Found ${uniqueUsernames.length} username(s): ${uniqueUsernames.join(", ")} — checking 29 platforms each...` });
-    const usernameResults = await Promise.allSettled(uniqueUsernames.map(u => crossCheckUsername(u)));
-    for (const ur of usernameResults) {
-      if (ur.status === "fulfilled" && ur.value.length) {
-        allMatches.push(...ur.value);
-        send("username_results", { results: ur.value });
-      }
-    }
-  } else {
-    send("phase", { phase: 3, label: "No usernames extracted — skipping cross-platform check" });
+    send("phase", { phase: 3, label: `Checking ${uniqueUsernames.length} username(s) across 26 platforms each: ${uniqueUsernames.join(", ")}` });
+    const unResults = await Promise.allSettled(uniqueUsernames.map(u => crossCheckUsername(u)));
+    for (const ur of unResults) { if (ur.status === "fulfilled" && ur.value.length) { allMatches.push(...ur.value); send("username_results", { results: ur.value }); } }
   }
 
   // ── Phase 4: Name variations + people-search databases ──
   if (identifiedName) {
-    send("phase", { phase: 4, label: "Searching name variations and people-search databases (Spokeo, WhitePages, PeekYou, SocialBlade)..." });
-    const nameResults = await searchNameVariations(identifiedName);
-    if (nameResults.length) {
-      allMatches.push(...nameResults);
-      send("name_variation_results", { results: nameResults, count: nameResults.length });
+    send("phase", { phase: 4, label: "Trying name variations and people-search databases..." });
+    const parts = identifiedName.toLowerCase().split(/\s+/);
+    const guesses = new Set();
+    if (parts.length >= 2) {
+      guesses.add(parts.join("")); guesses.add(parts.join(".")); guesses.add(parts.join("_"));
+      guesses.add(parts[0] + parts[parts.length-1][0]); guesses.add(parts[0][0] + parts[parts.length-1]);
     }
-  } else {
-    send("phase", { phase: 4, label: "No name — skipping name variation search" });
+    const guessResults = await Promise.allSettled([...guesses].slice(0, 3).map(g => crossCheckUsername(g)));
+    for (const gr of guessResults) { if (gr.status === "fulfilled") allMatches.push(...gr.value); }
+    // People-search + general
+    for (const q of [`"${identifiedName}" site:spokeo.com`, `"${identifiedName}" site:whitepages.com`, `"${identifiedName}" site:peekyou.com`, `"${identifiedName}" site:socialblade.com`, `"${identifiedName}" social media profile`]) {
+      try { const wr = await scrapeWebSearch(q); for (const r of wr.slice(0, 3)) { allMatches.push({ title: r.title, url: r.url, snippet: r.snippet, source_engine: "people-search", platform: detectPlatform(r.url) || "People Search" }); } } catch {}
+    }
+    send("name_variation_results", { count: allMatches.length });
   }
 
-  // ── Phase 5: General web searches ──
-  send("phase", { phase: 5, label: "Running general web searches..." });
-  const webQueries = [];
+  // ── Phase 5: DEEP site-specific searches (including NSFW) ──
+  send("phase", { phase: 5, label: "Deep searching specific sites (social media, forums, adult sites)..." });
+  const deepQueries = [];
   if (identifiedName) {
-    webQueries.push(`"${identifiedName}"`, `"${identifiedName}" photo`, `"${identifiedName}" profile`);
+    deepQueries.push(`"${identifiedName}" photo`, `"${identifiedName}" profile picture`, `"${identifiedName}" selfie`);
   }
   for (const un of uniqueUsernames.slice(0, 2)) {
-    webQueries.push(`"${un}" profile`);
+    deepQueries.push(`"${un}" profile`, `"${un}" photo`);
   }
-  for (const q of webQueries) {
+  // NSFW site searches if name known
+  if (identifiedName) {
+    const nsfwSites = ["onlyfans.com", "fansly.com", "pornhub.com", "xvideos.com", "xhamster.com", "redgifs.com", "reddit.com/r/gonewild", "manyvids.com", "chaturbate.com"];
+    for (const site of nsfwSites) {
+      deepQueries.push(`"${identifiedName}" site:${site}`);
+    }
+  }
+  for (const un of uniqueUsernames.slice(0, 2)) {
+    deepQueries.push(`"${un}" site:onlyfans.com`, `"${un}" site:reddit.com`);
+  }
+  for (const q of deepQueries.slice(0, 20)) {
     try {
       const wr = await scrapeWebSearch(q);
-      for (const r of wr.slice(0, 5)) {
-        allMatches.push({ title: r.title, url: r.url, snippet: r.snippet, source_engine: "web", platform: detectPlatform(r.url) });
+      for (const r of wr.slice(0, 3)) {
+        allMatches.push({ title: r.title, url: r.url, snippet: r.snippet, source_engine: "deep-web", platform: detectPlatform(r.url) });
       }
     } catch {}
   }
 
-  // ── Phase 6: Finalize — deduplicate, categorize ──
-  send("phase", { phase: 6, label: "Analyzing and categorizing all results..." });
+  // ── Phase 6: Follow up on found results — scrape the top result pages ──
+  send("phase", { phase: 6, label: "Deep crawling top result pages for more data..." });
+  const topUrls = allMatches.filter(m => m.url && m.platform).slice(0, 10).map(m => m.url);
+  const seenDomains = new Set();
+  for (const url of topUrls) {
+    try {
+      const domain = new URL(url).hostname;
+      if (seenDomains.has(domain)) continue;
+      seenDomains.add(domain);
+      const pageResp = await chainRequest(url, { timeout: 12000 });
+      if (pageResp.body && pageResp.bodySize > 500) {
+        // Extract more links from this page
+        const pageLinks = extractLinks(pageResp.body, [domain]);
+        for (const pl of pageLinks.slice(0, 5)) {
+          const plat = detectPlatform(pl.url);
+          if (plat && !allMatches.some(m => m.url === pl.url)) {
+            allMatches.push({ ...pl, source_engine: "deep-crawl", platform: plat });
+          }
+        }
+        // Extract images
+        const pageImgs = extractImages(pageResp.body, [domain]);
+        for (const pi of pageImgs.slice(0, 5)) {
+          if (!allMatches.some(m => m.url === pi)) {
+            allMatches.push({ title: "Found on " + domain, url: pi, thumbnail: pi, source_engine: "deep-crawl", platform: detectPlatform(pi) });
+          }
+        }
+      }
+    } catch {}
+  }
 
+  // ── Phase 7: General web searches ──
+  send("phase", { phase: 7, label: "Running final web searches..." });
+  const webQs = [];
+  if (identifiedName) webQs.push(`"${identifiedName}"`, `"${identifiedName}" photo`, `"${identifiedName}" instagram`, `"${identifiedName}" twitter`);
+  for (const un of uniqueUsernames.slice(0, 2)) webQs.push(`"${un}"`);
+  for (const q of webQs.slice(0, 8)) {
+    try { const wr = await scrapeWebSearch(q); for (const r of wr.slice(0, 5)) { allMatches.push({ title: r.title, url: r.url, snippet: r.snippet, source_engine: "web", platform: detectPlatform(r.url) }); } } catch {}
+  }
+
+  // ── Phase 8: Finalize ──
+  send("phase", { phase: 8, label: "Deduplicating and categorizing " + allMatches.length + " raw results..." });
   const seen = new Set();
   const deduped = [];
   for (const m of allMatches) {
     const key = (m.url || "").replace(/^https?:\/\/(?:www\.)?/, "").split("?")[0].split("#")[0].toLowerCase().replace(/\/+$/, "");
-    if (key && key.length > 3 && !seen.has(key)) {
-      seen.add(key);
-      if (!m.platform) m.platform = detectPlatform(m.url);
-      deduped.push(m);
-    }
+    if (key && key.length > 3 && !seen.has(key)) { seen.add(key); if (!m.platform) m.platform = detectPlatform(m.url); deduped.push(m); }
   }
-
   const byPlatform = {};
   const otherMatches = [];
-  for (const m of deduped) {
-    if (m.platform) {
-      if (!byPlatform[m.platform]) byPlatform[m.platform] = [];
-      byPlatform[m.platform].push(m);
-    } else {
-      otherMatches.push(m);
-    }
-  }
-
+  for (const m of deduped) { if (m.platform) { if (!byPlatform[m.platform]) byPlatform[m.platform] = []; byPlatform[m.platform].push(m); } else otherMatches.push(m); }
   const engineUrls = {};
   for (const es of engineStatuses) { if (es.results_url) engineUrls[es.engine] = es.results_url; }
 
@@ -1605,7 +1604,7 @@ app.post("/api/face-scan", async (req, res) => {
     total_matches: deduped.length,
     social_platforms_found: Object.keys(byPlatform).length,
     social_media: byPlatform,
-    other_matches: otherMatches.slice(0, 30),
+    other_matches: otherMatches.slice(0, 40),
     engines: engineUrls,
     engine_statuses: engineStatuses,
   });
@@ -2361,6 +2360,6 @@ setInterval(() => {
 
 app.listen(PORT, () => {
   console.log(`Person Lookup running at http://localhost:${PORT}`);
-  console.log(`Face scan v2: 7 engines (Google, Yandex, Bing, TinEye, Baidu, SauceNAO, KarmaDecay)`);
-  console.log(`+ deep social search (31 platforms) + username cross-check (29 sites) + people-search DBs`);
+  console.log(`Face scan v3: 9 engines (Google, Yandex, Bing, TinEye, Baidu, SauceNAO, KarmaDecay, FaceCheck, search4faces)`);
+  console.log(`+ deep social search (31 platforms) + username cross-check (26 sites) + NSFW sites + deep crawling`);
 });
