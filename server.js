@@ -819,7 +819,611 @@ app.post("/api/upload", upload.single("image"), (req, res) => {
   });
 });
 
-// ── Reverse image search (returns redirect URLs) ────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+//  FACE SCANNING PIPELINE — Full reverse image search with scraping
+// ══════════════════════════════════════════════════════════════════════════
+
+// HTTP client that follows redirects and returns the final page
+function chainRequest(url, options = {}, depth = 0) {
+  return new Promise((resolve, reject) => {
+    if (depth > 6) return resolve({ statusCode: 0, body: "", finalUrl: url, error: "too many redirects" });
+    try {
+      const parsed = new URL(url);
+      const driver = parsed.protocol === "https:" ? https : http;
+      const reqOpts = {
+        hostname: parsed.hostname,
+        port: parsed.port || undefined,
+        path: parsed.pathname + parsed.search,
+        method: options.method || "GET",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          "Accept-Encoding": "identity",
+          ...(options.headers || {}),
+        },
+      };
+      const req = driver.request(reqOpts, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          let loc = res.headers.location;
+          if (loc.startsWith("/")) loc = parsed.protocol + "//" + parsed.hostname + loc;
+          const cookies = res.headers["set-cookie"]?.map(c => c.split(";")[0]).join("; ") || "";
+          chainRequest(loc, {
+            method: "GET",
+            headers: { Cookie: cookies },
+          }, depth + 1).then(resolve).catch(reject);
+          return;
+        }
+        const chunks = [];
+        res.on("data", chunk => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString("utf-8"),
+            finalUrl: url,
+          });
+        });
+      });
+      req.on("error", err => resolve({ statusCode: 0, body: "", finalUrl: url, error: err.message }));
+      req.setTimeout(options.timeout || 20000, () => { req.destroy(); resolve({ statusCode: 0, body: "", finalUrl: url, error: "timeout" }); });
+      if (options.body) req.write(options.body);
+      req.end();
+    } catch (err) { resolve({ statusCode: 0, body: "", finalUrl: url, error: err.message }); }
+  });
+}
+
+// Detect social media platform from URL
+function detectPlatform(url) {
+  if (!url) return null;
+  const u = url.toLowerCase();
+  if (u.includes("instagram.com")) return "Instagram";
+  if (u.includes("twitter.com") || u.includes("x.com")) return "Twitter/X";
+  if (u.includes("facebook.com") || u.includes("fb.com")) return "Facebook";
+  if (u.includes("linkedin.com")) return "LinkedIn";
+  if (u.includes("tiktok.com")) return "TikTok";
+  if (u.includes("pinterest.com")) return "Pinterest";
+  if (u.includes("youtube.com") || u.includes("youtu.be")) return "YouTube";
+  if (u.includes("reddit.com")) return "Reddit";
+  if (u.includes("tumblr.com")) return "Tumblr";
+  if (u.includes("vk.com")) return "VK";
+  if (u.includes("flickr.com")) return "Flickr";
+  if (u.includes("deviantart.com")) return "DeviantArt";
+  if (u.includes("twitch.tv")) return "Twitch";
+  if (u.includes("snapchat.com")) return "Snapchat";
+  if (u.includes("threads.net")) return "Threads";
+  if (u.includes("bsky.app")) return "Bluesky";
+  if (u.includes("mastodon")) return "Mastodon";
+  if (u.includes("github.com")) return "GitHub";
+  if (u.includes("imdb.com")) return "IMDb";
+  if (u.includes("wikipedia.org")) return "Wikipedia";
+  if (u.includes("wikidata.org")) return "Wikidata";
+  return null;
+}
+
+// ── Yandex face scan (best for facial recognition) ──────────────────────
+
+async function yandexFaceScan(buffer, filename, contentType) {
+  try {
+    const { boundary, body } = buildMultipart({}, "upfile", buffer, filename, contentType);
+
+    // Submit image to Yandex
+    const response = await chainRequest("https://yandex.com/images/search?rpt=imageview", {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString(),
+      },
+      body: body,
+      timeout: 25000,
+    });
+
+    const html = response.body;
+    const results = [];
+    let identifiedName = null;
+
+    // Extract CBIR tags (Yandex face recognition — often contains the person's name)
+    const tagBlockMatch = html.match(/CbirTags[\s\S]*?<\/div>/i);
+    if (tagBlockMatch) {
+      const tagLinks = [...tagBlockMatch[0].matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi)];
+      for (const t of tagLinks) {
+        const tag = t[1].replace(/<[^>]*>/g, "").trim();
+        if (tag && tag.length > 1) {
+          if (!identifiedName) identifiedName = tag;
+        }
+      }
+    }
+
+    // Also try extracting name from title/heading
+    const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+    if (titleMatch && !identifiedName) {
+      const title = titleMatch[1].replace(/<[^>]*>/g, "").trim();
+      if (title && !title.includes("Yandex") && title.length < 60) {
+        identifiedName = title;
+      }
+    }
+
+    // Extract serp-items (search results with images)
+    const serpRegex = /data-bem='(\{"serp-item":\{[^']*\})'/g;
+    let match;
+    while ((match = serpRegex.exec(html)) !== null) {
+      try {
+        const decoded = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+        const data = JSON.parse(decoded)["serp-item"];
+        if (data) {
+          const item = {
+            title: data.snippet?.title || "",
+            url: data.snippet?.url || "",
+            thumbnail: data.preview?.[0]?.url || data.thumb?.url || "",
+            image_url: data.img_href || "",
+            source_engine: "yandex",
+          };
+          item.platform = detectPlatform(item.url);
+          if (item.url || item.image_url) results.push(item);
+        }
+      } catch {}
+    }
+
+    // Extract from simpler HTML patterns
+    const linkRegex = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*class="[^"]*link[^"]*"[^>]*>[\s\S]*?<\/a>/gi;
+    while ((match = linkRegex.exec(html)) !== null) {
+      const href = match[1];
+      if (href && !href.includes("yandex.") && !results.some(r => r.url === href)) {
+        const textMatch = match[0].match(/>([^<]+)</);
+        results.push({
+          title: textMatch ? textMatch[1].trim() : "",
+          url: href,
+          thumbnail: "",
+          source_engine: "yandex",
+          platform: detectPlatform(href),
+        });
+      }
+    }
+
+    // Extract image src URLs that might be thumbnails of results
+    const imgRegex = /<img[^>]+src="(https?:\/\/[^"]*(?:avatars|thumb|preview|photo|image)[^"]*)"[^>]*>/gi;
+    while ((match = imgRegex.exec(html)) !== null) {
+      // These are potential face match thumbnails
+    }
+
+    return {
+      engine: "yandex",
+      status: "ok",
+      results_url: response.finalUrl,
+      identified_name: identifiedName,
+      matches: results.slice(0, 30),
+    };
+  } catch (err) {
+    return { engine: "yandex", status: "error", error: err.message, matches: [] };
+  }
+}
+
+// ── Google face scan ────────────────────────────────────────────────────
+
+async function googleFaceScan(buffer, filename, contentType) {
+  try {
+    const { boundary, body } = buildMultipart(
+      { image_url: "", sbisrc: "cr_1" }, "encoded_image", buffer, filename, contentType
+    );
+
+    const response = await chainRequest("https://www.google.com/searchbyimage/upload", {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString(),
+      },
+      body: body,
+      timeout: 25000,
+    });
+
+    const html = response.body;
+    const results = [];
+    let identifiedName = null;
+
+    // Google sometimes shows "Results for [person name]" or entity info
+    const entityMatch = html.match(/(?:Results for|Possible related search)[:\s]*<[^>]*>([^<]+)/i);
+    if (entityMatch) identifiedName = entityMatch[1].trim();
+
+    // Try knowledge panel name
+    const kpMatch = html.match(/data-attrid="title"[^>]*>([^<]+)/i);
+    if (kpMatch && !identifiedName) identifiedName = kpMatch[1].trim();
+
+    // Extract search result links
+    const resultRegex = /<a[^>]+href="(https?:\/\/(?!www\.google\.)[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = resultRegex.exec(html)) !== null) {
+      const href = match[1];
+      const text = match[2].replace(/<[^>]*>/g, "").trim();
+      if (text && href && !href.includes("google.com/") && !results.some(r => r.url === href)) {
+        results.push({
+          title: text.slice(0, 200),
+          url: href,
+          thumbnail: "",
+          source_engine: "google",
+          platform: detectPlatform(href),
+        });
+      }
+    }
+
+    // Extract image results
+    const imgResultRegex = /\["(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)",\s*(\d+),\s*(\d+)\]/gi;
+    while ((match = imgResultRegex.exec(html)) !== null) {
+      const imgUrl = match[1];
+      if (!imgUrl.includes("gstatic.com") && !imgUrl.includes("google.com")) {
+        results.push({
+          title: "Image match",
+          url: imgUrl,
+          thumbnail: imgUrl,
+          image_url: imgUrl,
+          source_engine: "google",
+          platform: detectPlatform(imgUrl),
+        });
+      }
+    }
+
+    return {
+      engine: "google",
+      status: "ok",
+      results_url: response.finalUrl,
+      identified_name: identifiedName,
+      matches: results.slice(0, 30),
+    };
+  } catch (err) {
+    return { engine: "google", status: "error", error: err.message, matches: [] };
+  }
+}
+
+// ── TinEye scan ─────────────────────────────────────────────────────────
+
+async function tineyeFaceScan(buffer, filename, contentType) {
+  try {
+    const { boundary, body } = buildMultipart({}, "image", buffer, filename, contentType);
+
+    const response = await chainRequest("https://tineye.com/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString(),
+      },
+      body: body,
+      timeout: 25000,
+    });
+
+    const html = response.body;
+    const results = [];
+
+    // Extract TinEye match results
+    const matchRegex = /<a[^>]+class="[^"]*match-link[^"]*"[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = matchRegex.exec(html)) !== null) {
+      results.push({
+        title: match[2].replace(/<[^>]*>/g, "").trim() || "TinEye match",
+        url: match[1],
+        thumbnail: "",
+        source_engine: "tineye",
+        platform: detectPlatform(match[1]),
+      });
+    }
+
+    // Extract from other patterns
+    const linkRegex = /<p[^>]*class="[^"]*match[^"]*"[^>]*>[\s\S]*?<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>/gi;
+    while ((match = linkRegex.exec(html)) !== null) {
+      if (!results.some(r => r.url === match[1])) {
+        results.push({
+          title: "TinEye match",
+          url: match[1],
+          thumbnail: "",
+          source_engine: "tineye",
+          platform: detectPlatform(match[1]),
+        });
+      }
+    }
+
+    // Count total matches
+    const countMatch = html.match(/(\d+)\s*(?:results?|matches?)/i);
+
+    return {
+      engine: "tineye",
+      status: "ok",
+      results_url: response.finalUrl,
+      total_matches: countMatch ? parseInt(countMatch[1]) : results.length,
+      matches: results.slice(0, 20),
+    };
+  } catch (err) {
+    return { engine: "tineye", status: "error", error: err.message, matches: [] };
+  }
+}
+
+// ── Site-scoped face search (Google image search restricted to specific site) ──
+
+async function siteSpecificImageSearch(buffer, filename, contentType, siteDomain) {
+  try {
+    // Submit image to Google with site restriction
+    const { boundary, body } = buildMultipart(
+      { image_url: "", sbisrc: "cr_1" }, "encoded_image", buffer, filename, contentType
+    );
+
+    // First get the search token/redirect
+    const submitResp = await chainRequest("https://www.google.com/searchbyimage/upload", {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString(),
+      },
+      body: body,
+      timeout: 20000,
+    });
+
+    // Now add site: filter to the search
+    const finalUrl = submitResp.finalUrl;
+    if (finalUrl && finalUrl.includes("google.com")) {
+      const siteUrl = finalUrl + (finalUrl.includes("?") ? "&" : "?") + "as_sitesearch=" + encodeURIComponent(siteDomain);
+      const siteResp = await chainRequest(siteUrl, { timeout: 15000 });
+      const html = siteResp.body;
+      const results = [];
+
+      const linkRegex = /<a[^>]+href="(https?:\/\/(?:www\.)?[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+      let match;
+      while ((match = linkRegex.exec(html)) !== null) {
+        const href = match[1];
+        if (href.includes(siteDomain) && !results.some(r => r.url === href)) {
+          results.push({
+            title: match[2].replace(/<[^>]*>/g, "").trim().slice(0, 200),
+            url: href,
+            source_engine: "google-site",
+            platform: detectPlatform(href),
+          });
+        }
+      }
+      return results.slice(0, 5);
+    }
+    return [];
+  } catch { return []; }
+}
+
+// ── DuckDuckGo name search scoped to social media sites ──
+
+async function searchPersonOnSocial(name) {
+  if (!name) return [];
+  const sites = [
+    "instagram.com", "twitter.com", "facebook.com", "linkedin.com",
+    "tiktok.com", "youtube.com", "pinterest.com", "reddit.com",
+  ];
+  const allResults = [];
+
+  // Search DuckDuckGo for the person's name on social media
+  for (const site of sites) {
+    try {
+      const query = `"${name}" site:${site}`;
+      const webResults = await scrapeWebSearch(query);
+      for (const r of webResults.slice(0, 3)) {
+        allResults.push({
+          title: r.title,
+          url: r.url,
+          snippet: r.snippet,
+          source_engine: "ddg-social",
+          platform: detectPlatform(r.url),
+        });
+      }
+    } catch {}
+  }
+  return allResults;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  FACE SCAN API ENDPOINTS
+// ══════════════════════════════════════════════════════════════════════════
+
+// Image proxy — allows displaying external images without CORS issues
+app.get("/api/proxy-image", (req, res) => {
+  const url = req.query.url;
+  if (!url || !url.startsWith("http")) return res.status(400).send("Invalid URL");
+
+  try {
+    const parsed = new URL(url);
+    const driver = parsed.protocol === "https:" ? https : http;
+
+    const proxyReq = driver.get({
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "image/*,*/*;q=0.8",
+        "Referer": parsed.origin,
+      },
+    }, (proxyRes) => {
+      if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
+        // Follow one redirect for images
+        const loc = proxyRes.headers.location.startsWith("/")
+          ? parsed.protocol + "//" + parsed.hostname + proxyRes.headers.location
+          : proxyRes.headers.location;
+        proxyRes.resume();
+        try {
+          const rParsed = new URL(loc);
+          const rDriver = rParsed.protocol === "https:" ? https : http;
+          rDriver.get(loc, { headers: { "User-Agent": "Mozilla/5.0" } }, (rRes) => {
+            res.setHeader("Content-Type", rRes.headers["content-type"] || "image/jpeg");
+            res.setHeader("Cache-Control", "public, max-age=3600");
+            rRes.pipe(res);
+          }).on("error", () => res.status(502).end());
+        } catch { res.status(502).end(); }
+        return;
+      }
+      res.setHeader("Content-Type", proxyRes.headers["content-type"] || "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      proxyRes.pipe(res);
+    });
+    proxyReq.on("error", () => res.status(502).end());
+    proxyReq.setTimeout(10000, () => { proxyReq.destroy(); res.status(504).end(); });
+  } catch { res.status(400).end(); }
+});
+
+// Upload endpoint
+app.post("/api/upload", upload.single("image"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+  res.json({
+    filename: req.file.filename,
+    url: `/uploads/${req.file.filename}`,
+    size: req.file.size,
+    mimetype: req.file.mimetype,
+  });
+});
+
+// ── Full face scan endpoint (SSE streaming) ─────────────────────────────
+
+app.post("/api/face-scan", async (req, res) => {
+  const { imageData } = req.body;
+  if (!imageData) return res.status(400).json({ error: "imageData required" });
+
+  const matches = imageData.match(/^data:image\/(.*?);base64,(.*)$/);
+  if (!matches) return res.status(400).json({ error: "Invalid image data" });
+
+  const ext = matches[1] === "jpeg" ? "jpg" : matches[1];
+  const buffer = Buffer.from(matches[2], "base64");
+  const filename = `face_${Date.now()}.${ext}`;
+  const contentType = `image/${matches[1]}`;
+
+  // SSE streaming
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  function send(event, data) {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  let identifiedName = null;
+  const allMatches = [];
+
+  // Phase 1: Submit to all reverse image search engines in parallel
+  send("phase", { phase: 1, label: "Submitting face to Google, Yandex, TinEye..." });
+
+  const [yandexResult, googleResult, tineyeResult] = await Promise.allSettled([
+    yandexFaceScan(buffer, filename, contentType),
+    googleFaceScan(buffer, filename, contentType),
+    tineyeFaceScan(buffer, filename, contentType),
+  ]);
+
+  // Process Yandex results
+  if (yandexResult.status === "fulfilled" && yandexResult.value.status === "ok") {
+    const yr = yandexResult.value;
+    if (yr.identified_name) identifiedName = yr.identified_name;
+    send("engine_result", {
+      engine: "yandex", status: "ok",
+      results_url: yr.results_url,
+      identified_name: yr.identified_name,
+      match_count: yr.matches.length,
+    });
+    allMatches.push(...yr.matches);
+  } else {
+    send("engine_result", {
+      engine: "yandex", status: "error",
+      error: yandexResult.value?.error || "Failed",
+    });
+  }
+
+  // Process Google results
+  if (googleResult.status === "fulfilled" && googleResult.value.status === "ok") {
+    const gr = googleResult.value;
+    if (gr.identified_name && !identifiedName) identifiedName = gr.identified_name;
+    send("engine_result", {
+      engine: "google", status: "ok",
+      results_url: gr.results_url,
+      identified_name: gr.identified_name,
+      match_count: gr.matches.length,
+    });
+    allMatches.push(...gr.matches);
+  } else {
+    send("engine_result", {
+      engine: "google", status: "error",
+      error: googleResult.value?.error || "Failed",
+    });
+  }
+
+  // Process TinEye results
+  if (tineyeResult.status === "fulfilled" && tineyeResult.value.status === "ok") {
+    const tr = tineyeResult.value;
+    send("engine_result", {
+      engine: "tineye", status: "ok",
+      results_url: tr.results_url,
+      total_matches: tr.total_matches,
+      match_count: tr.matches.length,
+    });
+    allMatches.push(...tr.matches);
+  } else {
+    send("engine_result", {
+      engine: "tineye", status: "error",
+      error: tineyeResult.value?.error || "Failed",
+    });
+  }
+
+  // Phase 2: If name identified, search social media for that person
+  if (identifiedName) {
+    send("phase", { phase: 2, label: `Identified: "${identifiedName}" — searching social media...` });
+    send("identified", { name: identifiedName });
+
+    const socialResults = await searchPersonOnSocial(identifiedName);
+    if (socialResults.length) {
+      allMatches.push(...socialResults);
+      send("social_results", { results: socialResults });
+    }
+  } else {
+    send("phase", { phase: 2, label: "Searching social media platforms with face image..." });
+  }
+
+  // Phase 3: Site-specific reverse image searches on key social platforms
+  send("phase", { phase: 3, label: "Scanning Instagram, Facebook, Twitter, LinkedIn..." });
+
+  const socialSites = ["instagram.com", "twitter.com", "facebook.com", "linkedin.com", "tiktok.com"];
+  const siteResults = await Promise.allSettled(
+    socialSites.map(site => siteSpecificImageSearch(buffer, filename, contentType, site))
+  );
+
+  for (const sr of siteResults) {
+    if (sr.status === "fulfilled" && sr.value.length) {
+      allMatches.push(...sr.value);
+    }
+  }
+
+  // Deduplicate by URL
+  const seen = new Set();
+  const deduped = [];
+  for (const m of allMatches) {
+    const key = (m.url || "").split("?")[0].split("#")[0].toLowerCase();
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      deduped.push(m);
+    }
+  }
+
+  // Group by platform
+  const socialMediaMatches = deduped.filter(m => m.platform);
+  const otherMatches = deduped.filter(m => !m.platform);
+
+  // Group social by platform name
+  const byPlatform = {};
+  for (const m of socialMediaMatches) {
+    if (!byPlatform[m.platform]) byPlatform[m.platform] = [];
+    byPlatform[m.platform].push(m);
+  }
+
+  send("complete", {
+    identified_name: identifiedName,
+    total_matches: deduped.length,
+    social_media: byPlatform,
+    other_matches: otherMatches.slice(0, 20),
+    engines: {
+      yandex: yandexResult.status === "fulfilled" ? yandexResult.value.results_url : null,
+      google: googleResult.status === "fulfilled" ? googleResult.value.results_url : null,
+      tineye: tineyeResult.status === "fulfilled" ? tineyeResult.value.results_url : null,
+    },
+  });
+
+  res.end();
+});
+
+// ── Simple reverse search (for full image, non-face) ────────────────────
 
 app.post("/api/reverse-search", async (req, res) => {
   const { filename } = req.body;
@@ -833,42 +1437,18 @@ app.post("/api/reverse-search", async (req, res) => {
   const mimeMap = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
   const contentType = mimeMap[ext] || "image/jpeg";
 
-  const engines = ["google", "yandex", "tineye"];
-  const results = await Promise.allSettled(
-    engines.map(e => proxyReverseSearch(e, fileBuffer, filename, contentType))
-  );
+  const [yr, gr, tr] = await Promise.allSettled([
+    yandexFaceScan(fileBuffer, filename, contentType),
+    googleFaceScan(fileBuffer, filename, contentType),
+    tineyeFaceScan(fileBuffer, filename, contentType),
+  ]);
 
-  res.json({
-    results: results.map(r => r.status === "fulfilled" ? r.value : { engine: "unknown", status: "error" }),
-  });
-});
+  const results = [];
+  for (const r of [yr, gr, tr]) {
+    if (r.status === "fulfilled") results.push(r.value);
+  }
 
-// ── Face crop reverse search (accepts base64 image) ─────────────────────
-
-app.post("/api/face-search", async (req, res) => {
-  const { imageData } = req.body; // base64 data URL
-  if (!imageData) return res.status(400).json({ error: "imageData required" });
-
-  // Convert base64 to buffer
-  const matches = imageData.match(/^data:image\/(.*?);base64,(.*)$/);
-  if (!matches) return res.status(400).json({ error: "Invalid image data" });
-
-  const ext = matches[1] === "jpeg" ? "jpg" : matches[1];
-  const buffer = Buffer.from(matches[2], "base64");
-  const filename = `face_${Date.now()}.${ext}`;
-  const contentType = `image/${matches[1]}`;
-
-  const engines = ["google", "yandex", "tineye"];
-  const results = await Promise.allSettled(
-    engines.map(e => proxyReverseSearch(e, buffer, filename, contentType))
-  );
-
-  // Also do a web search for face-related results
-  // (limited without actual face recognition API, but we try)
-
-  res.json({
-    results: results.map(r => r.status === "fulfilled" ? r.value : { engine: "unknown", status: "error" }),
-  });
+  res.json({ results });
 });
 
 // ── Cleanup old uploads ─────────────────────────────────────────────────
@@ -889,5 +1469,5 @@ setInterval(() => {
 
 app.listen(PORT, () => {
   console.log(`Person Lookup running at http://localhost:${PORT}`);
-  console.log(`All searches are proxied through the server — no tabs will open.`);
+  console.log(`Face scanning pipeline active — scans Google, Yandex, TinEye + social media`);
 });

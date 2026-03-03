@@ -210,17 +210,52 @@
     .model-status { font-size: 0.8rem; color: var(--text2); text-align: center; padding: 10px; margin-bottom: 10px; }
     .model-status .loaded { color: var(--green); }
 
-    /* Face search results */
-    .face-search-results { margin-top: 8px; }
-    .face-search-result {
-      display: flex; align-items: center; gap: 8px; padding: 6px 0;
-      font-size: 0.82rem; border-bottom: 1px solid rgba(255,255,255,0.05);
+    /* Face scan results */
+    .scan-identified {
+      padding: 14px 18px; margin-bottom: 16px; border-radius: var(--radius);
+      background: rgba(0,184,148,0.1); border: 1px solid rgba(0,184,148,0.3);
+      text-align: center;
     }
-    .face-search-result .engine-badge {
-      padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600;
-      text-transform: uppercase; background: rgba(108,92,231,0.2); color: var(--accent);
+    .scan-identified .name { font-size: 1.3rem; font-weight: 700; color: var(--green); }
+    .scan-identified .sub { font-size: 0.82rem; color: var(--text2); margin-top: 4px; }
+    .platform-section { margin-bottom: 16px; }
+    .platform-section h4 {
+      font-size: 0.82rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 8px; padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
     }
-    .face-search-result a { color: var(--accent2); text-decoration: none; word-break: break-all; }
+    .platform-section h4 .platform-badge {
+      display: inline-block; padding: 2px 10px; border-radius: 4px;
+      font-size: 0.72rem; font-weight: 700;
+    }
+    .scan-match {
+      display: flex; align-items: flex-start; gap: 10px; padding: 8px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 0.84rem;
+    }
+    .scan-match:last-child { border-bottom: none; }
+    .scan-match img {
+      width: 48px; height: 48px; border-radius: 6px; object-fit: cover;
+      background: var(--surface); flex-shrink: 0;
+    }
+    .scan-match .info { flex: 1; min-width: 0; }
+    .scan-match .title { color: var(--text); font-weight: 500; }
+    .scan-match a { color: var(--accent2); text-decoration: none; word-break: break-all; font-size: 0.78rem; }
+    .scan-match a:hover { text-decoration: underline; }
+    .scan-match .snippet { color: var(--text2); font-size: 0.78rem; margin-top: 2px; }
+    .engine-tag {
+      padding: 1px 6px; border-radius: 3px; font-size: 0.65rem; font-weight: 600;
+      text-transform: uppercase; background: rgba(108,92,231,0.15); color: var(--accent);
+      margin-left: 6px; vertical-align: middle;
+    }
+    .scan-engines {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;
+    }
+    .scan-engine-link {
+      padding: 6px 14px; border-radius: 6px; font-size: 0.8rem; font-weight: 500;
+      background: var(--surface); border: 1px solid var(--border); color: var(--accent2);
+      text-decoration: none;
+    }
+    .scan-engine-link:hover { border-color: var(--accent); }
 
     /* Face compare */
     .compare-area {
@@ -328,9 +363,15 @@
         </div>
 
         <div class="panel-card" style="margin-top:20px">
-          <h3>Reverse Image Search Results</h3>
-          <div id="reverseSearchStatus" class="status" style="padding:8px 0">Upload an image to search</div>
-          <div id="reverseSearchResults"></div>
+          <h3>Face Scan Results</h3>
+          <p style="font-size:0.82rem; color:var(--text2); margin-bottom:12px">
+            Scans Google, Yandex, TinEye + social media platforms. Results stream in as they're found.
+          </p>
+          <div id="scanStatus" class="status" style="padding:8px 0">Upload an image to scan</div>
+          <div id="scanIdentified" class="hidden"></div>
+          <div id="scanEngines" class="hidden"></div>
+          <div id="scanSocialResults"></div>
+          <div id="scanOtherResults"></div>
         </div>
       </div>
     </div>
@@ -761,100 +802,194 @@
     }
   }
 
-  // Search face via server-side reverse image search
+  // Full face scan — streams results from server
   async function doFaceSearch(faceIndex) {
     if (!faceCrops[faceIndex]) return;
-    const resultDiv = document.getElementById("faceSearchResult" + faceIndex);
-    resultDiv.innerHTML = '<div style="color:var(--text2);font-size:0.8rem"><span class="spinner"></span> Searching Google, Yandex, TinEye for this face...</div>';
+    const btnDiv = document.getElementById("faceSearchResult" + faceIndex);
+    btnDiv.innerHTML = '<div style="color:var(--accent);font-size:0.78rem">Scanning... see results below</div>';
+
+    const statusEl = document.getElementById("scanStatus");
+    const identifiedEl = document.getElementById("scanIdentified");
+    const enginesEl = document.getElementById("scanEngines");
+    const socialEl = document.getElementById("scanSocialResults");
+    const otherEl = document.getElementById("scanOtherResults");
+
+    statusEl.innerHTML = '<span class="spinner"></span> Submitting face to search engines...';
+    statusEl.classList.remove("hidden");
+    identifiedEl.classList.add("hidden");
+    identifiedEl.innerHTML = "";
+    enginesEl.classList.add("hidden");
+    enginesEl.innerHTML = "";
+    socialEl.innerHTML = "";
+    otherEl.innerHTML = "";
 
     try {
-      const resp = await fetch("/api/face-search", {
+      const response = await fetch("/api/face-scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageData: faceCrops[faceIndex].dataUrl }),
       });
-      const data = await resp.json();
 
-      let html = '';
-      for (const r of data.results) {
-        if (r.status === "redirect" && r.redirect) {
-          html += '<div class="face-search-result">' +
-            '<span class="engine-badge">' + escapeHtml(r.engine) + '</span>' +
-            '<a href="' + escapeHtml(r.redirect) + '" target="_blank">View results on ' + escapeHtml(r.engine) + '</a>' +
-            '</div>';
-        } else if (r.status === "html") {
-          html += '<div class="face-search-result">' +
-            '<span class="engine-badge">' + escapeHtml(r.engine) + '</span>' +
-            '<span style="color:var(--text2)">Search submitted (status ' + r.statusCode + ')</span>' +
-            '</div>';
-        } else {
-          html += '<div class="face-search-result">' +
-            '<span class="engine-badge">' + escapeHtml(r.engine) + '</span>' +
-            '<span style="color:var(--danger)">' + escapeHtml(r.error || "Failed") + '</span>' +
-            '</div>';
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEvent = null;
+      const engineStatuses = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ") && currentEvent) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              if (currentEvent === "phase") {
+                statusEl.innerHTML = '<span class="spinner"></span> ' + escapeHtml(data.label);
+              }
+
+              if (currentEvent === "engine_result") {
+                engineStatuses.push(data);
+              }
+
+              if (currentEvent === "identified") {
+                identifiedEl.classList.remove("hidden");
+                identifiedEl.innerHTML = '<div class="scan-identified">' +
+                  '<div class="name">' + escapeHtml(data.name) + '</div>' +
+                  '<div class="sub">Person identified by reverse image search</div>' +
+                  '</div>';
+              }
+
+              if (currentEvent === "social_results") {
+                for (const r of data.results) {
+                  socialEl.innerHTML += renderScanMatch(r);
+                }
+              }
+
+              if (currentEvent === "complete") {
+                statusEl.classList.add("hidden");
+
+                // Show identified name
+                if (data.identified_name && identifiedEl.innerHTML === "") {
+                  identifiedEl.classList.remove("hidden");
+                  identifiedEl.innerHTML = '<div class="scan-identified">' +
+                    '<div class="name">' + escapeHtml(data.identified_name) + '</div>' +
+                    '<div class="sub">Person identified by reverse image search</div>' +
+                    '</div>';
+                }
+
+                // Show engine links
+                enginesEl.classList.remove("hidden");
+                let engHtml = '<div style="font-size:0.78rem;color:var(--text2);margin-bottom:6px">View full results on each engine:</div><div class="scan-engines">';
+                for (const [engine, url] of Object.entries(data.engines || {})) {
+                  if (url) {
+                    engHtml += '<a href="' + escapeHtml(url) + '" target="_blank" class="scan-engine-link">' + escapeHtml(engine.charAt(0).toUpperCase() + engine.slice(1)) + ' results</a>';
+                  }
+                }
+                engHtml += '</div>';
+
+                // Show engine statuses
+                engHtml += '<div style="margin-top:10px;font-size:0.78rem">';
+                for (const es of engineStatuses) {
+                  const icon = es.status === "ok" ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--danger)">&#10007;</span>';
+                  engHtml += '<div style="margin:3px 0">' + icon + ' <strong>' + escapeHtml(es.engine) + '</strong>: ';
+                  if (es.status === "ok") {
+                    engHtml += escapeHtml((es.match_count || 0) + ' matches found');
+                    if (es.identified_name) engHtml += ' — identified as "' + escapeHtml(es.identified_name) + '"';
+                  } else {
+                    engHtml += '<span style="color:var(--danger)">' + escapeHtml(es.error || "error") + '</span>';
+                  }
+                  engHtml += '</div>';
+                }
+                engHtml += '</div>';
+                enginesEl.innerHTML = engHtml;
+
+                // Show social media results grouped by platform
+                if (Object.keys(data.social_media || {}).length) {
+                  let socialHtml = '';
+                  const platformColors = {
+                    "Instagram": "#E4405F", "Twitter/X": "#1DA1F2", "Facebook": "#1877F2",
+                    "LinkedIn": "#0A66C2", "TikTok": "#000000", "YouTube": "#FF0000",
+                    "Pinterest": "#BD081C", "Reddit": "#FF4500", "Tumblr": "#36465D",
+                    "VK": "#4680C2", "GitHub": "#6e5494", "Wikipedia": "#000",
+                    "IMDb": "#F5C518", "Flickr": "#0063DC", "DeviantArt": "#05CC47",
+                  };
+                  for (const [platform, matches] of Object.entries(data.social_media)) {
+                    const color = platformColors[platform] || "var(--accent)";
+                    socialHtml += '<div class="platform-section">';
+                    socialHtml += '<h4><span class="platform-badge" style="background:' + color + ';color:#fff">' + escapeHtml(platform) + '</span> — ' + matches.length + ' result' + (matches.length !== 1 ? 's' : '') + '</h4>';
+                    for (const m of matches) {
+                      socialHtml += renderScanMatch(m);
+                    }
+                    socialHtml += '</div>';
+                  }
+                  socialEl.innerHTML = socialHtml;
+                }
+
+                // Show other (non-social) results
+                if (data.other_matches?.length) {
+                  let otherHtml = '<div class="platform-section"><h4 style="color:var(--text2)">Other Web Results — ' + data.other_matches.length + ' matches</h4>';
+                  for (const m of data.other_matches) {
+                    otherHtml += renderScanMatch(m);
+                  }
+                  otherHtml += '</div>';
+                  otherEl.innerHTML = otherHtml;
+                }
+
+                // Summary
+                if (!data.total_matches) {
+                  socialEl.innerHTML = '<div style="color:var(--text2);padding:12px;text-align:center">No matches found. Try uploading a clearer, front-facing photo.</div>';
+                }
+              }
+            } catch {}
+            currentEvent = null;
+          }
         }
       }
-      resultDiv.innerHTML = html || '<div style="color:var(--text2);font-size:0.8rem">No results returned.</div>';
     } catch (err) {
-      resultDiv.innerHTML = '<div style="color:var(--danger);font-size:0.8rem">Error: ' + escapeHtml(err.message) + '</div>';
+      statusEl.innerHTML = '<span style="color:var(--danger)">Error: ' + escapeHtml(err.message) + '</span>';
     }
   }
 
-  // ── Reverse Image Search (full image, server-side) ──
+  function renderScanMatch(m) {
+    const thumbSrc = m.thumbnail ? '/api/proxy-image?url=' + encodeURIComponent(m.thumbnail) : '';
+    const img = thumbSrc
+      ? '<img src="' + escapeHtml(thumbSrc) + '" alt="" onerror="this.style.display=\'none\'" />'
+      : '';
+    return '<div class="scan-match">' + img +
+      '<div class="info">' +
+        (m.title ? '<div class="title">' + escapeHtml(m.title.slice(0, 120)) + '<span class="engine-tag">' + escapeHtml(m.source_engine || "") + '</span></div>' : '') +
+        (m.url ? '<a href="' + escapeHtml(m.url) + '" target="_blank">' + escapeHtml(m.url.slice(0, 80)) + '</a>' : '') +
+        (m.snippet ? '<div class="snippet">' + escapeHtml(m.snippet.slice(0, 150)) + '</div>' : '') +
+      '</div></div>';
+  }
 
+  // Auto-scan when image is uploaded (full image reverse search)
   async function doReverseImageSearch(file) {
-    const statusEl = document.getElementById("reverseSearchStatus");
-    const resultsEl = document.getElementById("reverseSearchResults");
-    statusEl.innerHTML = '<span class="spinner"></span> Uploading image and searching...';
-    resultsEl.innerHTML = "";
+    // The face scan handles this per-face now
+    // This runs the full-image reverse search for non-face results
+    const statusEl = document.getElementById("scanStatus");
+    statusEl.innerHTML = '<span class="spinner"></span> Uploading image...';
 
     try {
-      // Upload file to server
       const formData = new FormData();
       formData.append("image", file);
       const uploadResp = await fetch("/api/upload", { method: "POST", body: formData });
       const uploadData = await uploadResp.json();
-
       if (!uploadData.filename) {
-        statusEl.innerHTML = '<span style="color:var(--danger)">Upload failed</span>';
+        statusEl.textContent = "Upload complete. Click 'Scan This Face' on a detected face to search.";
         return;
       }
-
-      // Run reverse search
-      statusEl.innerHTML = '<span class="spinner"></span> Searching Google, Yandex, TinEye...';
-      const searchResp = await fetch("/api/reverse-search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: uploadData.filename }),
-      });
-      const searchData = await searchResp.json();
-
-      let html = '';
-      let foundAny = false;
-      for (const r of searchData.results) {
-        if (r.status === "redirect" && r.redirect) {
-          foundAny = true;
-          html += '<div class="face-search-result" style="padding:10px 0">' +
-            '<span class="engine-badge" style="min-width:60px;text-align:center">' + escapeHtml(r.engine) + '</span>' +
-            '<a href="' + escapeHtml(r.redirect) + '" target="_blank">View ' + escapeHtml(r.engine) + ' results &rarr;</a>' +
-            '</div>';
-        } else if (r.status === "html") {
-          html += '<div class="face-search-result" style="padding:10px 0">' +
-            '<span class="engine-badge" style="min-width:60px;text-align:center">' + escapeHtml(r.engine) + '</span>' +
-            '<span style="color:var(--text2)">Submitted (HTTP ' + r.statusCode + ') — engine may require direct visit</span>' +
-            '</div>';
-        } else {
-          html += '<div class="face-search-result" style="padding:10px 0">' +
-            '<span class="engine-badge" style="min-width:60px;text-align:center">' + escapeHtml(r.engine) + '</span>' +
-            '<span style="color:var(--danger)">' + escapeHtml(r.error || "Error") + '</span>' +
-            '</div>';
-        }
-      }
-
-      statusEl.textContent = foundAny ? "Reverse search complete. Click links to view results." : "Search complete.";
-      resultsEl.innerHTML = html;
+      statusEl.textContent = "Image uploaded. Click 'Scan This Face' on a detected face to begin scanning.";
     } catch (err) {
-      statusEl.innerHTML = '<span style="color:var(--danger)">Error: ' + escapeHtml(err.message) + '</span>';
+      statusEl.innerHTML = '<span style="color:var(--danger)">Upload error: ' + escapeHtml(err.message) + '</span>';
     }
   }
 
