@@ -1099,7 +1099,7 @@
 
               if (eventType === "engine_result") {
                 engineResults.push(data);
-                div.innerHTML = '<div class="status"><span class="spinner"></span> Searching engines... (' + engineResults.length + '/5 done)</div>' + renderServerResults(engineResults, identifiedName, null);
+                div.innerHTML = '<div class="status"><span class="spinner"></span> Searching engines... (' + engineResults.length + '/4 done)</div>' + renderServerResults(engineResults, identifiedName, null);
               }
 
               if (eventType === "identified") {
@@ -1131,8 +1131,8 @@
       if (engineResults.length > 0) {
         html += '<div style="display:flex; flex-wrap:wrap; gap:6px; margin:12px 0">';
         for (const er of engineResults) {
-          const color = er.status === "ok" && er.match_count > 0 ? "var(--green)" : er.status === "ok" ? "var(--orange)" : "var(--danger)";
-          const icon = er.status === "ok" && er.match_count > 0 ? "&#9989;" : er.status === "ok" ? "&#9898;" : "&#10060;";
+          const color = er.status === "ok" && er.match_count > 0 ? "var(--green)" : er.status === "ok" ? "var(--orange)" : er.status === "blocked" ? "var(--orange)" : "var(--danger)";
+          const icon = er.status === "ok" && er.match_count > 0 ? "&#9989;" : er.status === "blocked" ? "&#128683;" : er.status === "ok" ? "&#9898;" : "&#10060;";
           html += '<span style="background:rgba(255,255,255,0.06); border:1px solid ' + color + '; border-radius:6px; padding:4px 10px; font-size:0.82rem">';
           html += icon + ' <strong>' + escapeHtml(er.engine) + '</strong>';
           if (er.match_count > 0) html += ' (' + er.match_count + ')';
@@ -1147,6 +1147,9 @@
       if (identifiedName) {
         html += '<div style="background:rgba(0,184,148,0.1); border:1px solid rgba(0,184,148,0.3); border-radius:8px; padding:10px 16px; margin:10px 0; font-size:0.9rem">';
         html += '<strong>Person identified:</strong> ' + escapeHtml(identifiedName);
+        if (finalData && finalData.usernames_found && finalData.usernames_found.length > 0) {
+          html += '<br><span style="color:var(--text2); font-size:0.82rem">Usernames found: ' + finalData.usernames_found.map(u => escapeHtml(u)).join(', ') + '</span>';
+        }
         html += '</div>';
       }
 
@@ -1157,8 +1160,10 @@
           for (const [platform, matches] of Object.entries(finalData.social_media)) {
             html += '<div style="margin-bottom:6px">';
             html += '<strong style="color:var(--text)">' + escapeHtml(platform) + ':</strong> ';
-            for (const m of matches.slice(0, 3)) {
-              html += '<a href="' + escapeHtml(m.url) + '" target="_blank" rel="noopener" style="color:var(--accent2); margin-right:12px; font-size:0.85rem">' + escapeHtml(m.title || m.url).substring(0, 60) + '</a> ';
+            for (const m of matches.slice(0, 5)) {
+              const confColor = m.confidence === 'high' ? 'var(--green)' : m.confidence === 'medium' ? 'var(--orange)' : 'var(--text2)';
+              html += '<a href="' + escapeHtml(m.url) + '" target="_blank" rel="noopener" style="color:var(--accent2); margin-right:8px; font-size:0.85rem">' + escapeHtml(m.title || m.url).substring(0, 60) + '</a>';
+              if (m.confidence) html += '<span style="color:' + confColor + '; font-size:0.72rem; margin-right:10px">[' + m.confidence + ']</span>';
             }
             html += '</div>';
           }
