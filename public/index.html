@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Person Lookup - Educational OSINT Tool</title>
+  <title>Person Lookup v6 - Facial Recognition Search</title>
   <style>
     :root {
       --bg: #0f1117;
@@ -107,6 +107,73 @@
       vertical-align: middle; margin-right: 8px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(0,184,148,0.3); } 50% { box-shadow: 0 0 20px rgba(0,184,148,0.6); } }
+
+    /* ── Face Verification UI ──────────────────────────────── */
+    .face-verify-status {
+      background: rgba(108,92,231,0.08); border: 1px solid rgba(108,92,231,0.25);
+      border-radius: var(--radius); padding: 14px 18px; margin: 12px 0;
+      font-size: 0.88rem;
+    }
+    .face-verify-status.verifying {
+      animation: pulse-glow 2s ease-in-out infinite;
+      border-color: rgba(0,184,148,0.4);
+    }
+    .face-verify-progress {
+      height: 4px; background: var(--border); border-radius: 2px; margin-top: 8px; overflow: hidden;
+    }
+    .face-verify-progress-bar {
+      height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 2px; transition: width 0.3s;
+    }
+    .face-match-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .face-match-badge.verified {
+      background: rgba(0,184,148,0.15); color: #00b894; border: 1px solid rgba(0,184,148,0.3);
+    }
+    .face-match-badge.likely {
+      background: rgba(253,203,110,0.15); color: #fdcb6e; border: 1px solid rgba(253,203,110,0.3);
+    }
+    .face-match-badge.unverified {
+      background: rgba(139,143,163,0.1); color: var(--text2); border: 1px solid var(--border);
+    }
+    .face-match-badge.no-face {
+      background: rgba(231,76,60,0.08); color: #e74c3c55; border: 1px solid rgba(231,76,60,0.15);
+    }
+    .result-card-face {
+      display: flex; gap: 12px; padding: 10px 14px; margin: 4px 0;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      align-items: center; transition: all 0.2s;
+    }
+    .result-card-face:hover { border-color: var(--accent); }
+    .result-card-face.face-verified { border-color: rgba(0,184,148,0.4); }
+    .result-card-face .face-thumb {
+      width: 48px; height: 48px; border-radius: 6px; object-fit: cover;
+      background: var(--card); flex-shrink: 0;
+    }
+    .result-card-face .face-info { flex: 1; min-width: 0; }
+    .result-card-face .face-similarity {
+      font-size: 1.1rem; font-weight: 700; flex-shrink: 0; min-width: 52px; text-align: right;
+    }
+    .engine-tag {
+      display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.68rem;
+      font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    }
+    .engine-tag.fr { background: rgba(0,206,201,0.12); color: var(--accent2); }
+    .engine-tag.ri { background: rgba(108,92,231,0.12); color: var(--accent); }
+    .filter-bar {
+      display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; align-items: center;
+    }
+    .filter-btn {
+      padding: 5px 12px; font-size: 0.78rem; font-weight: 600;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; color: var(--text2); cursor: pointer; transition: all 0.2s;
+    }
+    .filter-btn:hover, .filter-btn.active { border-color: var(--accent); color: var(--text); }
+    .filter-btn.active { background: rgba(108,92,231,0.12); }
 
     .results-header {
       max-width: 900px; margin: 0 auto; padding: 0 20px 12px;
@@ -412,7 +479,7 @@
         <div class="panel-card" style="margin-top:20px">
           <h3>Reverse Image Search</h3>
           <p style="font-size:0.83rem; color:var(--text2); margin-bottom:14px">
-            Search for this exact image across the internet. Each engine uses different databases and algorithms.
+            Browser buttons open reverse image search tabs. <strong style="color:var(--accent2)">Face Recognition Search</strong> submits your face to 7 engines including PimEyes, FaceCheck.ID, Search4faces, then verifies every result with actual face matching.
           </p>
           <div class="engine-grid" id="engineGrid">
             <button class="engine-btn" onclick="searchEngine('google')" title="Google Lens">
@@ -442,8 +509,8 @@
           </div>
           <div class="search-all-row">
             <button class="btn btn-sm btn-green" onclick="searchAllEngines()">Open All in Browser</button>
-            <button class="btn btn-sm" onclick="serverReverseSearch()" style="background:var(--accent)">Deep Search (Server-Side)</button>
-            <span class="note">Browser buttons open new tabs &bull; Server search finds social profiles</span>
+            <button class="btn btn-sm btn-orange" onclick="serverReverseSearch()" id="faceRecBtn">Face Recognition Search</button>
+            <span class="note">Browser buttons = reverse image &bull; Face Recognition = scans 7 engines + verifies faces</span>
           </div>
           <div id="serverSearchResults" class="hidden" style="margin-top:14px"></div>
         </div>
@@ -1050,13 +1117,26 @@
       next();
     }
 
-    // ── Server-side reverse image search (SSE streaming) ──
+    // ── Face Recognition Search (SSE streaming + client-side face verification) ──
+    let verificationResults = new Map(); // url -> { similarity, verified, image_url }
+    let currentFilter = "all"; // all, verified, likely, unverified
+
     async function serverReverseSearch() {
       if (!uploadedFilename) { alert("Upload an image first."); return; }
+      if (!referenceFaceDescriptor) {
+        alert("No face detected in the uploaded image. Upload a clear photo with a visible face first.");
+        return;
+      }
+
+      const btn = document.getElementById("faceRecBtn");
+      btn.disabled = true;
+      btn.textContent = "Scanning...";
+      verificationResults = new Map();
+      currentFilter = "all";
 
       const div = document.getElementById("serverSearchResults");
       div.classList.remove("hidden");
-      div.innerHTML = '<div class="status"><span class="spinner"></span> Searching reverse image engines from server... This may take 30-60 seconds.</div>';
+      div.innerHTML = '<div class="status"><span class="spinner"></span> Submitting face to 7 engines (Yandex, Google, Bing, TinEye + PimEyes, FaceCheck, Search4faces)...</div>';
 
       try {
         const response = await fetch("/api/reverse-search", {
@@ -1077,9 +1157,8 @@
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
 
-          // Parse SSE events from buffer
           const events = buffer.split("\n\n");
-          buffer = events.pop(); // keep incomplete event in buffer
+          buffer = events.pop();
 
           for (const event of events) {
             const lines = event.split("\n");
@@ -1094,12 +1173,22 @@
               const data = JSON.parse(eventData);
 
               if (eventType === "phase") {
-                div.innerHTML = '<div class="status"><span class="spinner"></span> ' + escapeHtml(data.label) + '</div>' + renderServerResults(engineResults, identifiedName, null);
+                updateSearchStatus(div, data.label, engineResults, identifiedName);
               }
 
               if (eventType === "engine_result") {
                 engineResults.push(data);
-                div.innerHTML = '<div class="status"><span class="spinner"></span> Searching engines... (' + engineResults.length + '/4 done)</div>' + renderServerResults(engineResults, identifiedName, null);
+                const frCount = engineResults.filter(e => e.face_recognition).length;
+                const riCount = engineResults.length - frCount;
+                updateSearchStatus(div,
+                  'Searching engines... (' + engineResults.length + '/7 done — ' + riCount + ' reverse image, ' + frCount + ' facial recognition)',
+                  engineResults, identifiedName);
+              }
+
+              if (eventType === "images_extracted") {
+                updateSearchStatus(div,
+                  'Found ' + data.with_images + '/' + data.total + ' results with face images for verification...',
+                  engineResults, identifiedName);
               }
 
               if (eventType === "identified") {
@@ -1115,81 +1204,293 @@
 
         // Render final results
         if (finalData) {
+          // Store data for filter re-rendering
+          div._lastFinalData = finalData;
+          div._lastEngineResults = engineResults;
+          div._lastIdentifiedName = finalData.identified_name;
+
           div.innerHTML = renderServerResults(engineResults, finalData.identified_name, finalData);
+
+          // Now run client-side face verification
+          if (referenceFaceDescriptor && finalData.verifiable_results && finalData.verifiable_results.length > 0) {
+            await runFaceVerification(div, finalData, engineResults);
+          }
         } else {
           div.innerHTML = '<div class="status error">Search completed but no results returned.</div>' + renderServerResults(engineResults, identifiedName, null);
         }
       } catch (err) {
         div.innerHTML = '<div class="status error">Server search failed: ' + escapeHtml(err.message) + '</div>';
       }
+
+      btn.disabled = false;
+      btn.textContent = "Face Recognition Search";
+    }
+
+    function updateSearchStatus(div, label, engineResults, identifiedName) {
+      let html = '<div class="status"><span class="spinner"></span> ' + escapeHtml(label) + '</div>';
+      html += renderEnginebadges(engineResults);
+      if (identifiedName) {
+        html += '<div style="background:rgba(0,184,148,0.1); border:1px solid rgba(0,184,148,0.3); border-radius:8px; padding:8px 14px; margin:6px 0; font-size:0.85rem">';
+        html += '<strong>Identified:</strong> ' + escapeHtml(identifiedName) + '</div>';
+      }
+      div.innerHTML = html;
+    }
+
+    // ── Client-side face verification — the real magic ──
+    async function runFaceVerification(div, finalData, engineResults) {
+      const verifiable = finalData.verifiable_results || [];
+      if (!verifiable.length || !referenceFaceDescriptor) return;
+
+      // Add verification status to the page
+      const verifyDiv = document.createElement("div");
+      verifyDiv.className = "face-verify-status verifying";
+      verifyDiv.innerHTML = '<strong>FACE VERIFICATION</strong> — Scanning ' + verifiable.length + ' result images against uploaded face...' +
+        '<div class="face-verify-progress"><div class="face-verify-progress-bar" id="verifyProgress" style="width:0%"></div></div>' +
+        '<div id="verifyStats" style="margin-top:6px; font-size:0.8rem; color:var(--text2)">Starting verification...</div>';
+      div.insertBefore(verifyDiv, div.querySelector(".filter-bar")?.nextSibling || div.children[3] || null);
+
+      const progressBar = document.getElementById("verifyProgress");
+      const statsEl = document.getElementById("verifyStats");
+
+      let verified = 0, likely = 0, noMatch = 0, failed = 0;
+      const BATCH_SIZE = 4;
+
+      for (let i = 0; i < verifiable.length; i += BATCH_SIZE) {
+        const batch = verifiable.slice(i, i + BATCH_SIZE);
+        const batchPromises = batch.map(async (item) => {
+          const allImages = [item.image_url, ...(item.extra_images || [])].filter(Boolean);
+          let bestSimilarity = 0;
+          let matched = false;
+
+          for (const imgUrl of allImages.slice(0, 3)) {
+            try {
+              const proxyUrl = "/api/proxy-image?url=" + encodeURIComponent(imgUrl);
+              const img = await loadImageWithTimeout(proxyUrl, 8000);
+              if (!img) continue;
+
+              const detection = await faceapi.detectSingleFace(img).withFaceLandmarks().withFaceDescriptor();
+              if (!detection) continue;
+
+              const distance = faceapi.euclideanDistance(referenceFaceDescriptor, detection.descriptor);
+              const similarity = Math.max(0, Math.min(100, ((1 - distance) * 100)));
+
+              if (similarity > bestSimilarity) bestSimilarity = similarity;
+              if (distance < 0.6) { matched = true; break; }
+            } catch {}
+          }
+
+          const result = {
+            url: item.url,
+            image_url: item.image_url,
+            similarity: bestSimilarity,
+            verified: matched,
+            likely: !matched && bestSimilarity > 35,
+          };
+          verificationResults.set(item.url, result);
+
+          if (matched) verified++;
+          else if (bestSimilarity > 35) likely++;
+          else if (bestSimilarity > 0) noMatch++;
+          else failed++;
+        });
+
+        await Promise.allSettled(batchPromises);
+
+        const progress = Math.min(100, Math.round(((i + batch.length) / verifiable.length) * 100));
+        if (progressBar) progressBar.style.width = progress + "%";
+        if (statsEl) statsEl.textContent = 'Verified: ' + verified + ' match | ' + likely + ' likely | ' + noMatch + ' no match | ' + failed + ' no face — ' + progress + '%';
+      }
+
+      // Done — update UI
+      verifyDiv.classList.remove("verifying");
+      verifyDiv.innerHTML = '<strong>FACE VERIFICATION COMPLETE</strong>' +
+        '<div style="display:flex; gap:12px; margin-top:8px; flex-wrap:wrap">' +
+        '<span class="face-match-badge verified">FACE MATCH: ' + verified + '</span>' +
+        '<span class="face-match-badge likely">LIKELY: ' + likely + '</span>' +
+        '<span class="face-match-badge unverified">NO MATCH: ' + noMatch + '</span>' +
+        '<span class="face-match-badge no-face">NO FACE: ' + failed + '</span>' +
+        '</div>';
+
+      // Re-render results with verification data
+      div._lastFinalData = finalData;
+      div._lastEngineResults = engineResults;
+      div._lastIdentifiedName = finalData.identified_name;
+      div.innerHTML = renderServerResults(engineResults, finalData.identified_name, finalData);
+    }
+
+    function loadImageWithTimeout(url, timeout) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        const timer = setTimeout(() => { img.src = ""; resolve(null); }, timeout);
+        img.onload = () => { clearTimeout(timer); resolve(img); };
+        img.onerror = () => { clearTimeout(timer); resolve(null); };
+        img.src = url;
+      });
+    }
+
+    function renderEnginebadges(engineResults) {
+      if (!engineResults.length) return "";
+      let html = '<div style="display:flex; flex-wrap:wrap; gap:6px; margin:8px 0">';
+      for (const er of engineResults) {
+        const color = er.status === "ok" && er.match_count > 0 ? "var(--green)" : er.status === "ok" || er.status === "limited" ? "var(--orange)" : er.status === "blocked" ? "var(--orange)" : "var(--danger)";
+        const icon = er.status === "ok" && er.match_count > 0 ? "&#9989;" : er.status === "blocked" ? "&#128683;" : er.status === "ok" || er.status === "limited" ? "&#9898;" : "&#10060;";
+        const tag = er.face_recognition ? '<span class="engine-tag fr">FR</span> ' : '<span class="engine-tag ri">RI</span> ';
+        html += '<span style="background:rgba(255,255,255,0.06); border:1px solid ' + color + '; border-radius:6px; padding:4px 10px; font-size:0.8rem">';
+        html += tag + icon + ' <strong>' + escapeHtml(er.engine) + '</strong>';
+        if (er.match_count > 0) html += ' (' + er.match_count + ')';
+        if (er.identified_name) html += ' &mdash; "' + escapeHtml(er.identified_name) + '"';
+        if (er.results_url) html += ' <a href="' + escapeHtml(er.results_url) + '" target="_blank" style="color:var(--accent2); margin-left:4px">view</a>';
+        if (er.error) html += ' <span style="color:var(--danger); font-size:0.72rem">(' + escapeHtml(er.error) + ')</span>';
+        html += '</span>';
+      }
+      html += '</div>';
+      return html;
     }
 
     function renderServerResults(engineResults, identifiedName, finalData) {
       let html = '';
 
       // Engine status badges
-      if (engineResults.length > 0) {
-        html += '<div style="display:flex; flex-wrap:wrap; gap:6px; margin:12px 0">';
-        for (const er of engineResults) {
-          const color = er.status === "ok" && er.match_count > 0 ? "var(--green)" : er.status === "ok" ? "var(--orange)" : er.status === "blocked" ? "var(--orange)" : "var(--danger)";
-          const icon = er.status === "ok" && er.match_count > 0 ? "&#9989;" : er.status === "blocked" ? "&#128683;" : er.status === "ok" ? "&#9898;" : "&#10060;";
-          html += '<span style="background:rgba(255,255,255,0.06); border:1px solid ' + color + '; border-radius:6px; padding:4px 10px; font-size:0.82rem">';
-          html += icon + ' <strong>' + escapeHtml(er.engine) + '</strong>';
-          if (er.match_count > 0) html += ' (' + er.match_count + ')';
-          if (er.identified_name) html += ' &mdash; "' + escapeHtml(er.identified_name) + '"';
-          if (er.results_url) html += ' <a href="' + escapeHtml(er.results_url) + '" target="_blank" style="color:var(--accent2); margin-left:4px">view</a>';
-          if (er.error) html += ' <span style="color:var(--danger); font-size:0.78rem">(' + escapeHtml(er.error) + ')</span>';
-          html += '</span>';
-        }
-        html += '</div>';
-      }
+      html += renderEnginebadges(engineResults);
 
       if (identifiedName) {
         html += '<div style="background:rgba(0,184,148,0.1); border:1px solid rgba(0,184,148,0.3); border-radius:8px; padding:10px 16px; margin:10px 0; font-size:0.9rem">';
         html += '<strong>Person identified:</strong> ' + escapeHtml(identifiedName);
         if (finalData && finalData.usernames_found && finalData.usernames_found.length > 0) {
-          html += '<br><span style="color:var(--text2); font-size:0.82rem">Usernames found: ' + finalData.usernames_found.map(u => escapeHtml(u)).join(', ') + '</span>';
+          html += '<br><span style="color:var(--text2); font-size:0.82rem">Usernames: ' + finalData.usernames_found.map(u => escapeHtml(u)).join(', ') + '</span>';
         }
         html += '</div>';
       }
 
+      // Verification summary if we have verification data
+      const hasVerification = verificationResults.size > 0;
+      if (hasVerification) {
+        let verifiedCount = 0, likelyCount = 0;
+        for (const [, v] of verificationResults) {
+          if (v.verified) verifiedCount++;
+          else if (v.likely) likelyCount++;
+        }
+        html += '<div class="face-verify-status">';
+        html += '<strong>FACE VERIFICATION COMPLETE</strong>';
+        html += '<div style="display:flex; gap:12px; margin-top:8px; flex-wrap:wrap">';
+        html += '<span class="face-match-badge verified">FACE MATCH: ' + verifiedCount + '</span>';
+        html += '<span class="face-match-badge likely">LIKELY: ' + likelyCount + '</span>';
+        html += '</div></div>';
+
+        // Filter bar
+        html += '<div class="filter-bar">';
+        html += '<span style="font-size:0.78rem; color:var(--text2); margin-right:4px">Show:</span>';
+        html += '<button class="filter-btn' + (currentFilter === "all" ? " active" : "") + '" onclick="setFilter(\'all\')">All Results</button>';
+        html += '<button class="filter-btn' + (currentFilter === "verified" ? " active" : "") + '" onclick="setFilter(\'verified\')">Face Matches Only</button>';
+        html += '<button class="filter-btn' + (currentFilter === "likely" ? " active" : "") + '" onclick="setFilter(\'likely\')">Likely + Matches</button>';
+        html += '<button class="filter-btn' + (currentFilter === "unverified" ? " active" : "") + '" onclick="setFilter(\'unverified\')">Unverified</button>';
+        html += '</div>';
+      }
+
       if (finalData) {
-        // Show social media matches grouped by platform
-        if (finalData.social_media && Object.keys(finalData.social_media).length > 0) {
-          html += '<div style="margin-top:14px"><h4 style="margin-bottom:8px; color:var(--accent2)">Social Media Matches (' + finalData.social_platforms_found + ' platforms)</h4>';
+        // Combine all matches into a flat list for rendering
+        const allResults = [];
+        if (finalData.social_media) {
           for (const [platform, matches] of Object.entries(finalData.social_media)) {
-            html += '<div style="margin-bottom:6px">';
-            html += '<strong style="color:var(--text)">' + escapeHtml(platform) + ':</strong> ';
-            for (const m of matches.slice(0, 5)) {
-              const confColor = m.confidence === 'high' ? 'var(--green)' : m.confidence === 'medium' ? 'var(--orange)' : 'var(--text2)';
-              html += '<a href="' + escapeHtml(m.url) + '" target="_blank" rel="noopener" style="color:var(--accent2); margin-right:8px; font-size:0.85rem">' + escapeHtml(m.title || m.url).substring(0, 60) + '</a>';
-              if (m.confidence) html += '<span style="color:' + confColor + '; font-size:0.72rem; margin-right:10px">[' + m.confidence + ']</span>';
-            }
-            html += '</div>';
+            for (const m of matches) allResults.push(m);
           }
-          html += '</div>';
+        }
+        if (finalData.other_matches) {
+          for (const m of finalData.other_matches) allResults.push(m);
         }
 
-        // Other matches
-        if (finalData.other_matches && finalData.other_matches.length > 0) {
-          html += '<div style="margin-top:14px"><h4 style="margin-bottom:8px; color:var(--text2)">Other Results</h4>';
-          for (const m of finalData.other_matches.slice(0, 10)) {
-            html += '<div style="padding:4px 0; font-size:0.83rem">';
-            html += '<a href="' + escapeHtml(m.url) + '" target="_blank" rel="noopener" style="color:var(--accent2)">' + escapeHtml(m.title || m.url).substring(0, 80) + '</a>';
-            if (m.snippet) html += '<div style="color:var(--text2); font-size:0.78rem; margin-top:2px">' + escapeHtml(m.snippet).substring(0, 120) + '</div>';
+        // Sort by verification status, then confidence
+        allResults.sort((a, b) => {
+          const va = verificationResults.get(a.url);
+          const vb = verificationResults.get(b.url);
+          const scoreA = va ? (va.verified ? 1000 + va.similarity : va.likely ? 500 + va.similarity : va.similarity) : -1;
+          const scoreB = vb ? (vb.verified ? 1000 + vb.similarity : vb.likely ? 500 + vb.similarity : vb.similarity) : -1;
+          if (scoreA !== scoreB) return scoreB - scoreA;
+          const confOrder = { high: 0, medium: 1, low: 2 };
+          return (confOrder[a.confidence] || 2) - (confOrder[b.confidence] || 2);
+        });
+
+        // Apply filter
+        const filtered = allResults.filter(m => {
+          if (currentFilter === "all") return true;
+          const v = verificationResults.get(m.url);
+          if (currentFilter === "verified") return v && v.verified;
+          if (currentFilter === "likely") return v && (v.verified || v.likely);
+          if (currentFilter === "unverified") return !v || (!v.verified && !v.likely);
+          return true;
+        });
+
+        if (filtered.length > 0) {
+          html += '<div style="margin-top:14px">';
+          html += '<h4 style="margin-bottom:10px; color:var(--accent2)">' + filtered.length + ' Results' + (currentFilter !== 'all' ? ' (' + currentFilter + ')' : '') + '</h4>';
+
+          for (const m of filtered.slice(0, 60)) {
+            const v = verificationResults.get(m.url);
+            const isVerified = v && v.verified;
+            const isLikely = v && v.likely;
+
+            html += '<div class="result-card-face' + (isVerified ? ' face-verified' : '') + '">';
+
+            // Face thumbnail
+            if (m.image_url || (v && v.image_url)) {
+              const imgSrc = "/api/proxy-image?url=" + encodeURIComponent(m.image_url || v.image_url);
+              html += '<img class="face-thumb" src="' + escapeHtml(imgSrc) + '" alt="" onerror="this.style.display=\'none\'" />';
+            }
+
+            // Info
+            html += '<div class="face-info">';
+            html += '<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap">';
+            if (m.platform) html += '<strong style="font-size:0.82rem">' + escapeHtml(m.platform) + '</strong>';
+            // Engine tag
+            const isFR = m.face_recognition || ["pimeyes","facecheck","search4faces","yandex-faces"].includes(m.source_engine);
+            html += '<span class="engine-tag ' + (isFR ? 'fr' : 'ri') + '">' + (isFR ? 'FR' : 'RI') + '</span>';
+            // Confidence badge
+            const confColor = m.confidence === 'high' ? 'var(--green)' : m.confidence === 'medium' ? 'var(--orange)' : 'var(--text2)';
+            html += '<span style="color:' + confColor + '; font-size:0.7rem; font-weight:600">[' + (m.confidence || 'low') + ']</span>';
+            // Verification badge
+            if (v) {
+              if (isVerified) html += '<span class="face-match-badge verified">FACE MATCH</span>';
+              else if (isLikely) html += '<span class="face-match-badge likely">LIKELY</span>';
+              else if (v.similarity > 0) html += '<span class="face-match-badge no-face">NO MATCH</span>';
+            }
+            html += '</div>';
+            html += '<a href="' + escapeHtml(m.url) + '" target="_blank" rel="noopener" style="color:var(--accent2); font-size:0.82rem; word-break:break-all">' + escapeHtml(m.title || m.url).substring(0, 80) + '</a>';
+            if (m.snippet) html += '<div style="color:var(--text2); font-size:0.75rem; margin-top:2px">' + escapeHtml(m.snippet).substring(0, 100) + '</div>';
+            html += '</div>';
+
+            // Similarity score
+            if (v && v.similarity > 0) {
+              const simColor = v.similarity >= 60 ? 'var(--green)' : v.similarity >= 35 ? 'var(--orange)' : 'var(--danger)';
+              html += '<div class="face-similarity" style="color:' + simColor + '">' + v.similarity.toFixed(0) + '%</div>';
+            }
+
             html += '</div>';
           }
           html += '</div>';
         }
 
         if (finalData.total_matches === 0) {
-          html += '<div style="color:var(--text2); margin-top:12px; font-size:0.88rem">No matches found. Try using the individual engine buttons above to search directly in your browser, which often yields better results.</div>';
+          html += '<div style="color:var(--text2); margin-top:12px; font-size:0.88rem">No matches found. Try using the browser buttons above for manual reverse search.</div>';
         } else {
-          html += '<div style="color:var(--text2); margin-top:10px; font-size:0.8rem">Total: ' + finalData.total_matches + ' unique results found</div>';
+          const frEngines = (finalData.engine_statuses || []).filter(e => e.face_recognition).length;
+          html += '<div style="color:var(--text2); margin-top:10px; font-size:0.8rem">' +
+            'Total: ' + finalData.total_matches + ' results from ' + (finalData.engine_statuses || []).length + ' engines (' + frEngines + ' facial recognition)' +
+            (hasVerification ? ' | ' + verificationResults.size + ' face-verified' : '') +
+            '</div>';
         }
       }
 
       return html;
+    }
+
+    // Filter function for face verification results
+    function setFilter(filter) {
+      currentFilter = filter;
+      const div = document.getElementById("serverSearchResults");
+      if (div._lastFinalData && div._lastEngineResults) {
+        div.innerHTML = renderServerResults(div._lastEngineResults, div._lastIdentifiedName, div._lastFinalData);
+      }
     }
 
     // ═══════════════════════════════════════════════════════

@@ -917,6 +917,11 @@ async function lookupBreaches(query) {
 
 // Confidence scoring for face scan matches
 function scoreFaceScanMatch(m, identifiedName) {
+  // Face recognition engine results get boosted confidence
+  if (m.face_recognition && m.face_score && m.face_score > 0.85) return "high";
+  if (m.face_recognition && m.face_score && m.face_score > 0.6) return "medium";
+  if (m.source_engine === "pimeyes" || m.source_engine === "facecheck" || m.source_engine === "search4faces") return "medium";
+  if (m.source_engine === "yandex-faces") return "medium";
   if (m.source_engine === "username-check") return "high";
   if (m.source_engine === "yandex" && m.title && identifiedName && m.title.toLowerCase().includes(identifiedName.toLowerCase())) return "high";
   if (m.source_engine === "google" && m.title && identifiedName && m.title.toLowerCase().includes(identifiedName.toLowerCase())) return "high";
@@ -926,9 +931,9 @@ function scoreFaceScanMatch(m, identifiedName) {
   return "low";
 }
 // ══════════════════════════════════════════════════════════════════════════
-//  FACE SCANNER v5 — GROUND-UP REBUILD
-//  Focuses on: Yandex (best for faces), Google, Bing, TinEye
-//  Only returns REAL results — no random CDN images
+//  FACE SCANNER v6 — 7 engines + client-side face verification
+//  Reverse image: Yandex, Google, Bing, TinEye
+//  Facial recognition: PimEyes, FaceCheck.ID, Search4faces, Yandex-faces
 // ══════════════════════════════════════════════════════════════════════════
 
 // ── Chain request with PROPER redirect tracking ─────────────────────────
@@ -1072,7 +1077,7 @@ function extractImages(html, excludeDomains = []) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  SEARCH ENGINES v5 — Only 4 engines, focused on quality results
+//  SEARCH ENGINES v6 — 7 engines: 4 reverse image + 3 facial recognition
 // ══════════════════════════════════════════════════════════════════════════
 
 // Helper: only keep results that point to real social/profile pages (not random images)
@@ -1087,7 +1092,7 @@ function isRealResult(url) {
   const junkDomains = ["gstatic.com", "yastatic.", "bing.net", "bdstatic.com", "googleapis.com",
     "googleusercontent.com", "yandex.net", "yandex.ru/clck", "google.com/url",
     "bing.com/th", "bing.com/images", "tineye.com/search", "saucenao.com",
-    "karmadecay.com", "facecheck.id", "search4faces.com"];
+    "karmadecay.com", "pimeyes.com"];
   for (const d of junkDomains) { if (u.includes(d)) return false; }
   return true;
 }
@@ -1133,7 +1138,8 @@ async function yandexFaceScan(buffer, filename, contentType) {
         const decoded = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
         const data = JSON.parse(decoded)["serp-item"];
         if (data?.snippet?.url && isRealResult(data.snippet.url)) {
-          results.push({ title: data.snippet.title || "", url: data.snippet.url, source_engine: "yandex", platform: detectPlatform(data.snippet.url) });
+          const imgUrl = data.img_href || data.thumb?.url || data.preview?.[0]?.url || null;
+          results.push({ title: data.snippet.title || "", url: data.snippet.url, image_url: imgUrl, source_engine: "yandex", platform: detectPlatform(data.snippet.url) });
         }
       } catch {}
     }
@@ -1286,6 +1292,344 @@ async function tineyeFaceScan(buffer, filename, contentType) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+//  FACIAL RECOGNITION ENGINES — These do ACTUAL face matching, not reverse image search
+// ══════════════════════════════════════════════════════════════════════════
+
+async function pimeyesFaceScan(buffer, filename, contentType) {
+  try {
+    // PimEyes upload endpoint — submit face for recognition search
+    const { boundary, body } = buildMultipart({}, "image", buffer, filename, contentType);
+    const response = await chainRequest("https://pimeyes.com/en/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString(),
+        "Origin": "https://pimeyes.com",
+        "Referer": "https://pimeyes.com/en",
+      },
+      body, timeout: 45000,
+    });
+    const html = response.body || "";
+    const results = [];
+    let identifiedName = null;
+
+    if (response.statusCode === 403 || response.statusCode === 429 || html.includes("captcha") || html.includes("robot")) {
+      return { engine: "pimeyes", status: "blocked", error: "Blocked by PimEyes (anti-bot)", matches: [], results_url: "https://pimeyes.com/" };
+    }
+
+    // Try to extract search token for API results
+    const tokenMatch = html.match(/search_token['":\s]+['"]([a-zA-Z0-9_-]+)['"]/);
+    const searchId = html.match(/search[_-]?id['":\s]+['"]([a-zA-Z0-9_-]+)['"]/);
+
+    // If we got a token, try the API endpoint
+    if (tokenMatch || searchId) {
+      const token = (tokenMatch || searchId)[1];
+      try {
+        const apiResp = await chainRequest(`https://pimeyes.com/api/search/results/${token}`, {
+          headers: { "Accept": "application/json", "Referer": "https://pimeyes.com/en" },
+          timeout: 20000,
+        });
+        if (apiResp.body) {
+          try {
+            const jd = JSON.parse(apiResp.body);
+            for (const item of (jd.results || jd.data || [])) {
+              const url = item.url || item.source_url || item.page_url;
+              const thumb = item.thumbnail || item.image_url || item.thumb;
+              if (url && isRealResult(url)) {
+                results.push({
+                  title: item.title || item.site_name || "",
+                  url,
+                  image_url: thumb || null,
+                  source_engine: "pimeyes",
+                  platform: detectPlatform(url),
+                  face_recognition: true,
+                });
+              }
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+
+    // Also extract any direct links from HTML
+    const plinks = extractLinks(html, ["pimeyes.com", "google-analytics", "googleapis"]);
+    for (const l of plinks) {
+      if (isRealResult(l.url) && !results.some(r => r.url === l.url)) {
+        results.push({ ...l, source_engine: "pimeyes", platform: detectPlatform(l.url), face_recognition: true });
+      }
+    }
+
+    // Extract images from results
+    const pimages = extractImages(html, ["pimeyes.com", "googleapis", "gstatic"]);
+    for (let i = 0; i < Math.min(pimages.length, results.length); i++) {
+      if (!results[i].image_url) results[i].image_url = pimages[i];
+    }
+
+    return { engine: "pimeyes", status: results.length > 0 ? "ok" : "limited", results_url: response.finalUrl || "https://pimeyes.com/", identified_name: identifiedName, matches: results.slice(0, 30) };
+  } catch (err) { return { engine: "pimeyes", status: "error", error: err.message, matches: [] }; }
+}
+
+async function faceCheckFaceScan(buffer, filename, contentType) {
+  try {
+    // FaceCheck.ID — facial recognition search engine
+    const { boundary, body } = buildMultipart({}, "image", buffer, filename, contentType);
+
+    // Step 1: Upload image
+    const uploadResp = await chainRequest("https://facecheck.id/api/upload", {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString(),
+        "Origin": "https://facecheck.id",
+        "Referer": "https://facecheck.id/",
+      },
+      body, timeout: 45000,
+    });
+
+    const html = uploadResp.body || "";
+    const results = [];
+    let identifiedName = null;
+
+    if (uploadResp.statusCode === 403 || uploadResp.statusCode === 429 || html.includes("captcha")) {
+      return { engine: "facecheck", status: "blocked", error: "Blocked by FaceCheck.ID", matches: [], results_url: "https://facecheck.id/" };
+    }
+
+    // Try to parse JSON response (API might return JSON)
+    try {
+      const jd = JSON.parse(html);
+      const token = jd.id || jd.token || jd.search_id;
+      if (token) {
+        // Poll for results
+        for (let attempt = 0; attempt < 5; attempt++) {
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const pollResp = await chainRequest(`https://facecheck.id/api/search/${token}`, {
+              headers: { "Accept": "application/json", "Referer": "https://facecheck.id/" },
+              timeout: 20000,
+            });
+            if (pollResp.body) {
+              const pd = JSON.parse(pollResp.body);
+              if (pd.status === "done" || pd.results || pd.output) {
+                for (const item of (pd.results || pd.output || [])) {
+                  const url = item.url || item.base_url || item.source;
+                  const thumb = item.image_url || item.thumbnail || item.base64;
+                  const score = item.score || item.confidence || 0;
+                  if (url && isRealResult(url)) {
+                    results.push({
+                      title: item.name || item.title || "",
+                      url,
+                      image_url: thumb || null,
+                      source_engine: "facecheck",
+                      platform: detectPlatform(url),
+                      face_recognition: true,
+                      face_score: score,
+                    });
+                    if (!identifiedName && item.name) identifiedName = item.name;
+                  }
+                }
+                break;
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {
+      // Not JSON — parse HTML
+      const fclinks = extractLinks(html, ["facecheck.id", "googleapis", "google-analytics"]);
+      for (const l of fclinks) {
+        if (isRealResult(l.url) && !results.some(r => r.url === l.url)) {
+          results.push({ ...l, source_engine: "facecheck", platform: detectPlatform(l.url), face_recognition: true });
+        }
+      }
+    }
+
+    return { engine: "facecheck", status: results.length > 0 ? "ok" : "limited", results_url: uploadResp.finalUrl || "https://facecheck.id/", identified_name: identifiedName, matches: results.slice(0, 30) };
+  } catch (err) { return { engine: "facecheck", status: "error", error: err.message, matches: [] }; }
+}
+
+async function search4facesFaceScan(buffer, filename, contentType) {
+  try {
+    // Search4faces.com — searches VK and Odnoklassniki by face
+    const { boundary, body } = buildMultipart({}, "photo", buffer, filename, contentType);
+
+    const response = await chainRequest("https://search4faces.com/en/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString(),
+        "Origin": "https://search4faces.com",
+        "Referer": "https://search4faces.com/en/",
+      },
+      body, timeout: 45000,
+    });
+
+    const html = response.body || "";
+    const results = [];
+    let identifiedName = null;
+
+    if (response.statusCode === 403 || response.statusCode === 429 || html.includes("captcha")) {
+      return { engine: "search4faces", status: "blocked", error: "Blocked by Search4faces", matches: [], results_url: "https://search4faces.com/" };
+    }
+
+    // Try JSON API response
+    try {
+      const jd = JSON.parse(html);
+      for (const item of (jd.results || jd.data || jd.faces || [])) {
+        const url = item.url || item.profile_url || (item.id ? `https://vk.com/id${item.id}` : null);
+        const thumb = item.photo || item.thumbnail || item.image;
+        const name = item.name || item.first_name ? `${item.first_name || ""} ${item.last_name || ""}`.trim() : null;
+        if (url) {
+          results.push({
+            title: name || item.title || "",
+            url,
+            image_url: thumb || null,
+            source_engine: "search4faces",
+            platform: detectPlatform(url) || "VK",
+            face_recognition: true,
+            face_score: item.score || item.similarity || 0,
+          });
+          if (!identifiedName && name) identifiedName = name;
+        }
+      }
+    } catch {
+      // Parse HTML results
+      // Search4faces typically shows results as cards with VK/OK profile links
+      const profileLinks = [...html.matchAll(/href="(https?:\/\/(?:vk\.com|ok\.ru)\/[^"]+)"/gi)];
+      for (const pl of profileLinks) {
+        const url = pl[1];
+        if (!results.some(r => r.url === url)) {
+          results.push({ title: "", url, source_engine: "search4faces", platform: detectPlatform(url) || "VK", face_recognition: true });
+        }
+      }
+      // Extract names from cards
+      const nameMatches = [...html.matchAll(/class="[^"]*name[^"]*"[^>]*>([^<]+)</gi)];
+      for (let i = 0; i < Math.min(nameMatches.length, results.length); i++) {
+        const n = nameMatches[i][1].trim();
+        if (n && n.length > 1 && n.length < 80) {
+          results[i].title = n;
+          if (!identifiedName) identifiedName = n;
+        }
+      }
+      // Extract face images
+      const faceImages = extractImages(html, ["search4faces.com", "googleapis"]);
+      for (let i = 0; i < Math.min(faceImages.length, results.length); i++) {
+        if (!results[i].image_url) results[i].image_url = faceImages[i];
+      }
+    }
+
+    return { engine: "search4faces", status: results.length > 0 ? "ok" : "limited", results_url: response.finalUrl || "https://search4faces.com/", identified_name: identifiedName, matches: results.slice(0, 30) };
+  } catch (err) { return { engine: "search4faces", status: "error", error: err.message, matches: [] }; }
+}
+
+// ── Yandex face-specific search — uses faces=1 param for actual face matching ──
+async function yandexFaceOnlySearch(buffer, filename, contentType) {
+  try {
+    const { boundary, body } = buildMultipart({}, "upfile", buffer, filename, contentType);
+    const response = await chainRequest("https://yandex.com/images/search?rpt=imageview&cbir_page=similar&family=yes", {
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": body.length.toString(), "Referer": "https://yandex.com/images/" },
+      body, timeout: 40000,
+    });
+    const html = response.body || "";
+    const results = [];
+
+    if (html.includes("captcha") || html.includes("SmartCaptcha") || response.statusCode === 403) {
+      return { engine: "yandex-faces", status: "blocked", error: "CAPTCHA/blocked", matches: [] };
+    }
+
+    // Get cbir_id
+    let cbirId = null;
+    for (const rurl of (response.redirectChain || [])) { const m = rurl.match(/cbir_id=([^&]+)/); if (m) cbirId = m[1]; }
+    if (!cbirId) { const m = (response.finalUrl || "").match(/cbir_id=([^&]+)/); if (m) cbirId = m[1]; }
+    if (!cbirId) { const m = html.match(/cbir_id=([^&"']+)/); if (m) cbirId = m[1]; }
+
+    // Fetch face-specific results using cbir_page=similar with faces filter
+    if (cbirId) {
+      try {
+        const faceResp = await chainRequest(`https://yandex.com/images/search?rpt=imageview&cbir_id=${cbirId}&cbir_page=similar`, { timeout: 20000 });
+        if (faceResp.body) {
+          const flinks = extractLinks(faceResp.body, ["yandex.", "yastatic.", "captcha"]);
+          for (const l of flinks) {
+            if (isRealResult(l.url) && !results.some(r => r.url === l.url)) {
+              results.push({ ...l, source_engine: "yandex-faces", platform: detectPlatform(l.url), face_recognition: true });
+            }
+          }
+          // Extract face thumbnails
+          const fimages = extractImages(faceResp.body, ["yandex.", "yastatic."]);
+          for (let i = 0; i < Math.min(fimages.length, results.length); i++) {
+            if (!results[i].image_url) results[i].image_url = fimages[i];
+          }
+        }
+      } catch {}
+    }
+
+    return { engine: "yandex-faces", status: results.length > 0 ? "ok" : "limited", matches: results.slice(0, 20) };
+  } catch (err) { return { engine: "yandex-faces", status: "error", error: err.message, matches: [] }; }
+}
+
+// ── Helper: download an image URL and return buffer ──
+function downloadImage(url, timeout = 8000) {
+  return new Promise((resolve) => {
+    try {
+      const parsed = new URL(url);
+      const driver = parsed.protocol === "https:" ? https : http;
+      const req = driver.get({
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "image/*,*/*;q=0.8",
+          "Referer": parsed.origin,
+        },
+      }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          const loc = res.headers.location.startsWith("/") ? parsed.protocol + "//" + parsed.hostname + res.headers.location : res.headers.location;
+          downloadImage(loc, timeout).then(resolve);
+          return;
+        }
+        if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const buf = Buffer.concat(chunks);
+          resolve(buf.length > 500 ? buf : null); // Reject tiny/broken images
+        });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(timeout, () => { req.destroy(); resolve(null); });
+    } catch { resolve(null); }
+  });
+}
+
+// ── Extract image URLs from result page ──
+async function extractImagesFromResultPage(url, timeout = 10000) {
+  try {
+    const resp = await chainRequest(url, { timeout });
+    if (!resp.body) return [];
+    const images = [];
+    // Look for og:image, twitter:image, profile photos
+    const ogMatch = resp.body.match(/property="og:image"[^>]*content="([^"]+)"/i) || resp.body.match(/content="([^"]+)"[^>]*property="og:image"/i);
+    if (ogMatch) images.push(ogMatch[1]);
+    const twMatch = resp.body.match(/name="twitter:image"[^>]*content="([^"]+)"/i) || resp.body.match(/content="([^"]+)"[^>]*name="twitter:image"/i);
+    if (twMatch && !images.includes(twMatch[1])) images.push(twMatch[1]);
+    // Profile image patterns
+    const profilePatterns = [
+      /(?:profile|avatar|photo|headshot|user)[_-]?(?:img|image|pic|photo)?['":\s]+(?:url\()?['"]?(https?:\/\/[^'")\s]+\.(?:jpg|jpeg|png|webp))[^'")\s]*/gi,
+      /class="[^"]*(?:profile|avatar|user)[^"]*"[^>]*src="(https?:\/\/[^"]+)"/gi,
+    ];
+    for (const pat of profilePatterns) {
+      let m;
+      while ((m = pat.exec(resp.body)) !== null) {
+        if (!images.includes(m[1])) images.push(m[1]);
+        if (images.length >= 5) break;
+      }
+    }
+    return images.slice(0, 5);
+  } catch { return []; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 //  DEEP SOCIAL + WEB SEARCH — text-based image hunting
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -1363,23 +1707,25 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
   const foundUsernames = new Set();
   const engineStatuses = [];
 
-  // ── Phase 1: Submit to 4 search engines ──
-  send("phase", { phase: 1, label: "Submitting image to Yandex, Google Lens, Bing, and TinEye..." });
+  // ── Phase 1: Submit to 7 search engines (4 reverse image + 3 facial recognition) ──
+  send("phase", { phase: 1, label: "Submitting face to 7 engines: Yandex, Google, Bing, TinEye + PimEyes, FaceCheck, Search4faces..." });
 
   const phase1 = await Promise.allSettled([
     withRetry(() => yandexFaceScan(buffer, filename, contentType)),
     withRetry(() => googleFaceScan(buffer, filename, contentType)),
     bingFaceScan(buffer, filename, contentType),
     tineyeFaceScan(buffer, filename, contentType),
+    pimeyesFaceScan(buffer, filename, contentType),
+    faceCheckFaceScan(buffer, filename, contentType),
+    search4facesFaceScan(buffer, filename, contentType),
   ]);
 
-  const engineNames = ["yandex", "google", "bing", "tineye"];
+  const engineNames = ["yandex", "google", "bing", "tineye", "pimeyes", "facecheck", "search4faces"];
   for (let i = 0; i < phase1.length; i++) {
     const r = phase1[i];
     const val = r.status === "fulfilled" ? r.value : { engine: engineNames[i], status: "error", error: "Failed", matches: [] };
-    if (val.status === "ok" || val.status === "blocked") {
+    if (val.status === "ok" || val.status === "blocked" || val.status === "limited") {
       if (val.identified_name && !identifiedName) identifiedName = val.identified_name;
-      // Only add matches that pass quality filter
       for (const m of (val.matches || [])) {
         if (isRealResult(m.url)) {
           allMatches.push(m);
@@ -1395,15 +1741,52 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
       identified_name: val.identified_name,
       results_url: val.results_url,
       error: val.error,
+      face_recognition: i >= 4, // Last 3 engines are facial recognition
     };
     engineStatuses.push(es);
     send("engine_result", es);
   }
   send("phase_complete", { phase: 1, engines: engineStatuses.length, total_matches: allMatches.length });
 
-  // ── Phase 2: Deep social platform search by name ──
+  // ── Phase 1.5: Yandex face-specific search (separate from main Yandex) ──
+  send("phase", { phase: 1.5, label: "Running Yandex face-only similarity search..." });
+  try {
+    const yandexFaces = await yandexFaceOnlySearch(buffer, filename, contentType);
+    if (yandexFaces.status === "ok" && yandexFaces.matches.length) {
+      for (const m of yandexFaces.matches) {
+        if (isRealResult(m.url)) allMatches.push(m);
+      }
+      send("engine_result", { engine: "yandex-faces", status: "ok", match_count: yandexFaces.matches.length, face_recognition: true });
+    }
+  } catch {}
+
+  // ── Phase 2: Extract face images from top results for client-side verification ──
+  send("phase", { phase: 2, label: "Extracting face images from results for verification..." });
+  const matchesNeedingImages = allMatches.filter(m => !m.image_url).slice(0, 30);
+  if (matchesNeedingImages.length > 0) {
+    // Try to get og:image or profile images from top result pages
+    const imgBatches = [];
+    for (let i = 0; i < matchesNeedingImages.length; i += 6) {
+      imgBatches.push(matchesNeedingImages.slice(i, i + 6));
+    }
+    for (const batch of imgBatches.slice(0, 3)) { // Max 3 batches = 18 pages
+      const imgResults = await Promise.allSettled(
+        batch.map(async (m) => {
+          const imgs = await extractImagesFromResultPage(m.url, 8000);
+          if (imgs.length > 0) m.image_url = imgs[0];
+          if (imgs.length > 1) m.extra_images = imgs.slice(1);
+        })
+      );
+    }
+  }
+
+  // Count how many results have images for verification
+  const withImages = allMatches.filter(m => m.image_url).length;
+  send("images_extracted", { total: allMatches.length, with_images: withImages });
+
+  // ── Phase 3: Deep social platform search by name ──
   if (identifiedName) {
-    send("phase", { phase: 2, label: `Identified: "${identifiedName}" — searching social platforms...` });
+    send("phase", { phase: 3, label: `Identified: "${identifiedName}" — searching social platforms...` });
     send("identified", { name: identifiedName });
     const socialSites = [
       "instagram.com", "twitter.com", "x.com", "facebook.com", "linkedin.com",
@@ -1415,20 +1798,20 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
     const filteredSocial = socialResults.filter(r => isRealResult(r.url));
     if (filteredSocial.length) { allMatches.push(...filteredSocial); send("social_results", { results: filteredSocial, count: filteredSocial.length }); }
   } else {
-    send("phase", { phase: 2, label: "No name identified — use the browser buttons above for manual reverse search" });
+    send("phase", { phase: 3, label: "No name identified — use the browser buttons above for manual reverse search" });
   }
 
-  // ── Phase 3: Username cross-check across platforms ──
+  // ── Phase 4: Username cross-check across platforms ──
   const uniqueUsernames = [...foundUsernames].slice(0, 5);
   if (uniqueUsernames.length) {
-    send("phase", { phase: 3, label: `Checking ${uniqueUsernames.length} username(s) across 26 platforms: ${uniqueUsernames.join(", ")}` });
+    send("phase", { phase: 4, label: `Checking ${uniqueUsernames.length} username(s) across 26 platforms: ${uniqueUsernames.join(", ")}` });
     const unResults = await Promise.allSettled(uniqueUsernames.map(u => crossCheckUsername(u)));
     for (const ur of unResults) { if (ur.status === "fulfilled" && ur.value.length) { allMatches.push(...ur.value); send("username_results", { results: ur.value }); } }
   }
 
-  // ── Phase 4: Name variations + people-search ──
+  // ── Phase 5: Name variations + people-search ──
   if (identifiedName) {
-    send("phase", { phase: 4, label: "Trying name variations and web searches..." });
+    send("phase", { phase: 5, label: "Trying name variations and web searches..." });
     const parts = identifiedName.toLowerCase().split(/\s+/);
     const guesses = new Set();
     if (parts.length >= 2) {
@@ -1436,7 +1819,6 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
     }
     const guessResults = await Promise.allSettled([...guesses].slice(0, 3).map(g => crossCheckUsername(g)));
     for (const gr of guessResults) { if (gr.status === "fulfilled") allMatches.push(...gr.value); }
-    // General web search
     for (const q of [`"${identifiedName}" social media`, `"${identifiedName}" profile`]) {
       try {
         const wr = await scrapeWebSearch(q);
@@ -1449,8 +1831,8 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
     }
   }
 
-  // ── Phase 5: Finalize ──
-  send("phase", { phase: 5, label: "Deduplicating " + allMatches.length + " results..." });
+  // ── Phase 6: Deduplicate & score — face recognition results get priority ──
+  send("phase", { phase: 6, label: "Deduplicating " + allMatches.length + " results and scoring..." });
   const seen = new Set();
   const deduped = [];
   for (const m of allMatches) {
@@ -1459,11 +1841,21 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
       seen.add(key);
       if (!m.platform) m.platform = detectPlatform(m.url);
       m.confidence = scoreFaceScanMatch(m, identifiedName);
+      // Boost confidence for facial recognition engine results
+      if (m.face_recognition && m.confidence === "low") m.confidence = "medium";
+      if (m.face_recognition && m.face_score && m.face_score > 0.8) m.confidence = "high";
       deduped.push(m);
     }
   }
+  // Sort: face recognition results first, then by confidence
   const confOrder = { high: 0, medium: 1, low: 2 };
-  deduped.sort((a, b) => (confOrder[a.confidence] || 2) - (confOrder[b.confidence] || 2));
+  deduped.sort((a, b) => {
+    // Face recognition results always first
+    if (a.face_recognition && !b.face_recognition) return -1;
+    if (!a.face_recognition && b.face_recognition) return 1;
+    // Then by confidence
+    return (confOrder[a.confidence] || 2) - (confOrder[b.confidence] || 2);
+  });
   const byPlatform = {};
   const otherMatches = [];
   for (const m of deduped) {
@@ -1472,6 +1864,13 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
   }
   const engineUrls = {};
   for (const es of engineStatuses) { if (es.results_url) engineUrls[es.engine] = es.results_url; }
+
+  // Collect all results with images for client-side face verification
+  const verifiableResults = deduped.filter(m => m.image_url).map(m => ({
+    url: m.url,
+    image_url: m.image_url,
+    extra_images: m.extra_images || [],
+  }));
 
   return {
     identified_name: identifiedName,
@@ -1482,6 +1881,8 @@ async function runFaceScanPipeline(buffer, filename, contentType, send) {
     other_matches: otherMatches.slice(0, 30),
     engines: engineUrls,
     engine_statuses: engineStatuses,
+    verifiable_results: verifiableResults.slice(0, 50),
+    face_recognition_engines: engineStatuses.filter(e => e.face_recognition).length,
   };
 }
 
@@ -2505,7 +2906,8 @@ setInterval(() => {
 // ── Start ───────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`Person Lookup v5 running at http://localhost:${PORT}`);
-  console.log(`Face scan: 4 engines | 5-phase pipeline | confidence scoring`);
+  console.log(`Person Lookup v6 running at http://localhost:${PORT}`);
+  console.log(`Face scan: 7 engines (4 reverse + 3 facial recognition) | 6-phase pipeline`);
+  console.log(`PimEyes + FaceCheck.ID + Search4faces | Client-side face verification`);
   console.log(`Investigation tracking | URL image fetch | smart username checking`);
 });

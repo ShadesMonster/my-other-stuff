@@ -1,6 +1,6 @@
 {
   "name": "person-lookup",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Educational person lookup tool with image search and face recognition",
   "main": "server.js",
   "scripts": {
