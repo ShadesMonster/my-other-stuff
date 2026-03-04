@@ -12,6 +12,9 @@ const PORT = process.env.PORT || 3000;
 const UPLOADS_DIR = path.join(__dirname, "uploads");
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
+const DATA_DIR = path.join(__dirname, "investigations");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
   filename: (_req, file, cb) => {
@@ -73,11 +76,12 @@ function fetchText(url, headers = {}, timeout = 10000) {
       method: "GET",
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
         ...headers,
       },
     };
     const req = driver.request(reqOpts, (res) => {
-      // Follow redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         let loc = res.headers.location;
         if (loc.startsWith("/")) loc = opts.protocol + "//" + opts.hostname + loc;
@@ -118,7 +122,6 @@ function headCheck(url, timeout = 8000) {
   });
 }
 
-// GET request that follows redirects, returns status code
 function getCheck(url, timeout = 8000) {
   return new Promise((resolve) => {
     try {
@@ -133,12 +136,10 @@ function getCheck(url, timeout = 8000) {
           Accept: "text/html",
         },
       }, (res) => {
-        res.resume(); // drain
-        // Follow redirects
+        res.resume();
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           let loc = res.headers.location;
           if (loc.startsWith("/")) loc = opts.protocol + "//" + opts.hostname + loc;
-          // Check if redirect goes to a "not found" or login page
           if (loc.includes("/login") || loc.includes("/404") || loc.includes("error")) {
             resolve(404);
           } else {
@@ -163,6 +164,443 @@ async function safeFetch(url, headers) {
   } catch { return null; }
 }
 
+// ── Smart username check — GET + body analysis ───────────────────────────
+
+async function smartCheckUsername(platformName, url) {
+  try {
+    let fetchUrl = url;
+    let fetchHeaders = {};
+
+    if (platformName === "GitHub") {
+      const parts = new URL(url).pathname.split("/").filter(Boolean);
+      fetchUrl = `https://api.github.com/users/${parts[0]}`;
+      fetchHeaders = { Accept: "application/json" };
+    } else if (platformName === "Reddit") {
+      const parts = new URL(url).pathname.replace(/\/$/, "").split("/").filter(Boolean);
+      const username = parts[parts.length - 1];
+      fetchUrl = `https://www.reddit.com/user/${username}/about.json`;
+      fetchHeaders = { Accept: "application/json" };
+    }
+
+    const { status, data: body } = await fetchText(fetchUrl, fetchHeaders, 10000);
+
+    if (!body && status === 0) return { exists: false, status: 0, confidence: "low" };
+
+    const b = body || "";
+
+    switch (platformName) {
+      case "Instagram":
+        if (b.includes('"is_private"') || b.includes('"user"')) return { exists: true, status, confidence: "high" };
+        if (b.includes("Sorry, this page")) return { exists: false, status, confidence: "high" };
+        return { exists: status === 200, status, confidence: "medium" };
+
+      case "Twitter/X":
+        if (b.includes("profile_image") || b.includes('content="@')) return { exists: true, status, confidence: "high" };
+        if (b.includes("This account doesn't exist") || b.includes("Hmm...this page doesn't exist")) return { exists: false, status, confidence: "high" };
+        return { exists: status === 200, status, confidence: "medium" };
+
+      case "TikTok":
+        if (b.includes("userInfo") || b.includes("uniqueId")) return { exists: true, status, confidence: "high" };
+        if (b.includes("Couldn't find this account")) return { exists: false, status, confidence: "high" };
+        return { exists: status === 200, status, confidence: "medium" };
+
+      case "Facebook":
+        if (b.includes("profile_owner") || b.includes("pageTitle")) return { exists: true, status, confidence: "high" };
+        if (b.includes("page isn't available") || b.includes("content isn't available")) return { exists: false, status, confidence: "high" };
+        return { exists: status === 200, status, confidence: "medium" };
+
+      case "YouTube":
+        if (b.includes("channelMetadataRenderer") || b.includes("subscriberCountText")) return { exists: true, status, confidence: "high" };
+        if (b.includes("This page isn't available")) return { exists: false, status, confidence: "high" };
+        return { exists: status === 200, status, confidence: "medium" };
+
+      case "GitHub": {
+        let parsed = null;
+        try { parsed = JSON.parse(b); } catch {}
+        if (status === 200 && parsed && parsed.avatar_url) return { exists: true, status, confidence: "high" };
+        if (parsed && parsed.message === "Not Found") return { exists: false, status, confidence: "high" };
+        return { exists: false, status, confidence: "low" };
+      }
+
+      case "Reddit": {
+        let parsed = null;
+        try { parsed = JSON.parse(b); } catch {}
+        if (parsed && parsed.data) return { exists: true, status, confidence: "high" };
+        if (status === 404 || (parsed && parsed.error)) return { exists: false, status, confidence: "high" };
+        return { exists: false, status, confidence: "low" };
+      }
+
+      default: {
+        const notFoundPhrases = [
+          "not found", "doesn't exist", "does not exist", "no user",
+          "page not available", "user not found", "account not found",
+          "404", "nothing here", "page doesn't exist",
+        ];
+        const bodyLower = b.toLowerCase();
+        const hasNotFound = notFoundPhrases.some(p => bodyLower.includes(p));
+        if (status === 200 && !hasNotFound && b.length > 5000) return { exists: true, status, confidence: "medium" };
+        if (hasNotFound || status === 404) return { exists: false, status, confidence: "medium" };
+        return { exists: status >= 200 && status < 400 && b.length > 5000, status, confidence: "low" };
+      }
+    }
+  } catch { return { exists: false, status: 0, confidence: "low" }; }
+}
+
+// ── Username check across 26 platforms ──────────────────────────────────
+
+async function checkUsername(username) {
+  const platforms = [
+    { name: "Instagram",    url: `https://www.instagram.com/${username}/` },
+    { name: "Twitter/X",   url: `https://x.com/${username}` },
+    { name: "TikTok",      url: `https://www.tiktok.com/@${username}` },
+    { name: "Facebook",    url: `https://www.facebook.com/${username}` },
+    { name: "YouTube",     url: `https://www.youtube.com/@${username}` },
+    { name: "GitHub",      url: `https://github.com/${username}` },
+    { name: "Reddit",      url: `https://www.reddit.com/user/${username}` },
+    { name: "Pinterest",   url: `https://www.pinterest.com/${username}/` },
+    { name: "Twitch",      url: `https://www.twitch.tv/${username}` },
+    { name: "Spotify",     url: `https://open.spotify.com/user/${username}` },
+    { name: "SoundCloud",  url: `https://soundcloud.com/${username}` },
+    { name: "Medium",      url: `https://medium.com/@${username}` },
+    { name: "Dribbble",    url: `https://dribbble.com/${username}` },
+    { name: "Behance",     url: `https://www.behance.net/${username}` },
+    { name: "DeviantArt",  url: `https://www.deviantart.com/${username}` },
+    { name: "Flickr",      url: `https://www.flickr.com/people/${username}` },
+    { name: "Patreon",     url: `https://www.patreon.com/${username}` },
+    { name: "Steam",       url: `https://steamcommunity.com/id/${username}` },
+    { name: "Letterboxd",  url: `https://letterboxd.com/${username}` },
+    { name: "Last.fm",     url: `https://www.last.fm/user/${username}` },
+    { name: "MyAnimeList", url: `https://myanimelist.net/profile/${username}` },
+    { name: "Linktree",    url: `https://linktr.ee/${username}` },
+    { name: "About.me",    url: `https://about.me/${username}` },
+    { name: "Product Hunt",url: `https://www.producthunt.com/@${username}` },
+    { name: "CodePen",     url: `https://codepen.io/${username}` },
+    { name: "Replit",      url: `https://replit.com/@${username}` },
+    { name: "Kaggle",      url: `https://www.kaggle.com/${username}` },
+    { name: "Threads",     url: `https://www.threads.net/@${username}` },
+  ];
+
+  const CONCURRENCY = 8;
+  const results = [];
+  for (let i = 0; i < platforms.length; i += CONCURRENCY) {
+    const batch = platforms.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (p) => {
+        try {
+          const check = await smartCheckUsername(p.name, p.url);
+          return { name: p.name, url: p.url, exists: check.exists, status: check.status, confidence: check.confidence };
+        } catch {
+          return { name: p.name, url: p.url, exists: false, status: 0, confidence: "low" };
+        }
+      })
+    );
+    for (const r of batchResults) {
+      if (r.status === "fulfilled") results.push(r.value);
+    }
+  }
+  return results;
+}
+
+// ── Confidence scoring ───────────────────────────────────────────────────
+
+function calculateConfidence(result) {
+  if (!result) return "low";
+  const src = (result.source || "").toLowerCase();
+  const name = (result.name || "").toLowerCase();
+
+  // High confidence: direct API matches or face-identified names
+  if (src === "github" && result.avatar_url) return "high";
+  if (src === "reddit" && result.link_karma !== undefined) return "high";
+  if (src === "wikipedia" && result.extract) return "high";
+  if (src === "duckduckgo" && result.description && result.profile_url) return "high";
+  if (src === "github commit emails") return "high";
+  if (src === "keybase" && result.linked_accounts) return "high";
+  if (result.confidence === "high") return "high";
+
+  // Medium confidence: site-scoped DDG hits, cross-checks, named search results
+  if (src.includes("duckduckgo") && result.profile_url) return "medium";
+  if (src === "stack overflow" && result.profile_url) return "medium";
+  if (src === "hacker news" && result.karma !== undefined) return "medium";
+  if (src === "gitlab" && result.profile_url) return "medium";
+  if (src === "mastodon" && result.profile_url) return "medium";
+  if (src === "gravatar" && result.profile_url) return "medium";
+  if (src === "lichess" && result.profile_url) return "medium";
+  if (src === "chess.com" && result.profile_url) return "medium";
+  if (src === "dev.to" && result.profile_url) return "medium";
+  if (src === "docker hub" && result.profile_url) return "medium";
+  if (src === "npm" && result.profile_url) return "medium";
+  if (src === "hugging face" && result.profile_url) return "medium";
+  if (src === "crates.io" && result.profile_url) return "medium";
+  if (result.confidence === "medium") return "medium";
+  if (result.source_engine === "ddg-site" && result.url) return "medium";
+  if (result.source_engine === "username-check" && result.url) return "medium";
+
+  // Low confidence: generic web links, image URLs, unconfirmed checks
+  return "low";
+}
+
+// ── DuckDuckGo HTML search scrape ────────────────────────────────────────
+
+async function scrapeWebSearch(query) {
+  try {
+    const { status, data } = await fetchText(
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+      { Accept: "text/html" },
+      12000
+    );
+    if (status !== 200 || !data) return [];
+
+    const results = [];
+    const linkRegex = /<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+    const snippetRegex = /<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+
+    const links = [...data.matchAll(linkRegex)];
+    const snippets = [...data.matchAll(snippetRegex)];
+
+    for (let i = 0; i < Math.min(links.length, 10); i++) {
+      let url = links[i][1];
+      const uddg = url.match(/uddg=([^&]+)/);
+      if (uddg) url = decodeURIComponent(uddg[1]);
+      const title = links[i][2].replace(/<[^>]*>/g, "").trim();
+      const snippet = snippets[i] ? snippets[i][1].replace(/<[^>]*>/g, "").trim() : "";
+      if (title && url.startsWith("http")) results.push({ title, url, snippet });
+    }
+    return results;
+  } catch { return []; }
+}
+
+// ── Reverse image search helpers ─────────────────────────────────────────
+
+function buildMultipart(fields, fileField, fileBuffer, filename, contentType) {
+  const boundary = "----PersonLookup" + crypto.randomBytes(16).toString("hex");
+  const parts = [];
+  for (const [key, val] of Object.entries(fields)) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`));
+  }
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`));
+  parts.push(fileBuffer);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  return { boundary, body: Buffer.concat(parts) };
+}
+
+function proxyReverseSearch(engine, fileBuffer, filename, contentType) {
+  return new Promise((resolve) => {
+    let host, postPath, fileField, extraFields;
+    switch (engine) {
+      case "google":
+        host = "www.google.com"; postPath = "/searchbyimage/upload";
+        fileField = "encoded_image"; extraFields = { image_url: "", sbisrc: "cr_1" };
+        break;
+      case "yandex":
+        host = "yandex.com"; postPath = "/images/search?rpt=imageview&format=json";
+        fileField = "upfile"; extraFields = {};
+        break;
+      case "tineye":
+        host = "tineye.com"; postPath = "/search";
+        fileField = "image"; extraFields = {};
+        break;
+      default: return resolve({ engine, status: "error", error: "Unknown engine" });
+    }
+    const { boundary, body } = buildMultipart(extraFields, fileField, fileBuffer, filename, contentType);
+    const req = https.request({
+      hostname: host, path: postPath, method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          let loc = res.headers.location;
+          if (loc.startsWith("/")) loc = `https://${host}${loc}`;
+          resolve({ engine, redirect: loc, status: "redirect" });
+        } else {
+          resolve({ engine, status: "html", statusCode: res.statusCode });
+        }
+      });
+    });
+    req.on("error", (err) => resolve({ engine, status: "error", error: err.message }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ engine, status: "error", error: "timeout" }); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// ── Exposure score ────────────────────────────────────────────────────────
+
+function calculateExposureScore(results, usernameResults) {
+  let score = 0;
+  const factors = [];
+  for (const r of results) {
+    const s = r.source || "";
+    if (s === "GitHub") { score += 15; factors.push("GitHub profile exposed");
+      if (r.email) { score += 10; factors.push("Email visible on GitHub"); }
+      if (r.location) { score += 5; factors.push("Location on GitHub"); }
+    }
+    if (s === "Reddit") { score += 10; factors.push("Reddit account found"); }
+    if (s === "Wikipedia") { score += 5; factors.push("Wikipedia page exists"); }
+    if (s === "Stack Overflow") { score += 8; factors.push("Stack Overflow profile"); }
+    if (s === "Hacker News") { score += 8; factors.push("Hacker News account"); }
+    if (s === "Gravatar") { score += 10; factors.push("Gravatar profile"); }
+    if (s === "GitLab") { score += 8; factors.push("GitLab profile"); }
+    if (s === "Keybase") { score += 10; factors.push("Keybase (links many accounts)"); }
+    if (s === "Docker Hub") { score += 5; factors.push("Docker Hub account"); }
+    if (s === "npm") { score += 5; factors.push("npm profile"); }
+    if (s === "DEV.to") { score += 5; factors.push("DEV.to profile"); }
+    if (s.includes("Mastodon")) { score += 8; factors.push("Fediverse presence"); }
+    if (s.includes("GitHub Repos")) { score += 5; factors.push("Public repos reveal tech stack"); }
+    if (s.includes("GitHub Activity")) { score += 8; factors.push("Activity patterns reveal timezone"); }
+    if (s.includes("GitHub Gists")) { score += 5; factors.push("Public gists"); }
+    if (s.includes("Commit Emails")) { score += 15; factors.push("Real email in git commits"); }
+    if (s.includes("DuckDuckGo")) { score += 5; factors.push("Structured info on search engines"); }
+    if (s.includes("Lichess") || s.includes("Chess.com")) { score += 3; factors.push("Gaming profile"); }
+    if (s.includes("Roblox")) { score += 3; factors.push("Roblox profile"); }
+  }
+  if (usernameResults) {
+    const found = usernameResults.filter(r => r.exists);
+    if (found.length > 5) { score += 15; factors.push(`Username found on ${found.length} platforms`); }
+    else if (found.length > 0) { score += 8; factors.push(`Username found on ${found.length} platforms`); }
+    for (const r of found) {
+      if (["Instagram", "Facebook", "Twitter/X", "TikTok", "LinkedIn"].includes(r.name)) {
+        score += 3; factors.push(`${r.name} profile exists`);
+      }
+    }
+  }
+  return { score: Math.min(score, 100), factors };
+}
+
+// ── Deep social name search across 31 platforms ──────────────────────────
+
+async function deepSocialSearch(name) {
+  const sites = [
+    "instagram.com", "twitter.com", "x.com", "tiktok.com", "facebook.com",
+    "linkedin.com", "youtube.com", "pinterest.com", "reddit.com", "tumblr.com",
+    "flickr.com", "deviantart.com", "behance.net", "dribbble.com", "medium.com",
+    "twitch.tv", "soundcloud.com", "spotify.com", "threads.net", "bsky.app",
+    "mastodon.social", "vk.com", "ok.ru", "weibo.com", "snapchat.com",
+    "patreon.com", "onlyfans.com", "fansly.com", "letterboxd.com",
+    "myanimelist.net", "steamcommunity.com",
+  ];
+
+  const allResults = [];
+  const CONCURRENCY = 5;
+
+  for (let i = 0; i < sites.length; i += CONCURRENCY) {
+    const batch = sites.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.allSettled(
+      batch.map(async (site) => {
+        const wr = await scrapeWebSearch(`"${name}" site:${site}`);
+        return wr.slice(0, 4).map(r => ({
+          title: r.title, url: r.url, snippet: r.snippet,
+          source_engine: "ddg-site", platform: detectPlatform(r.url),
+          confidence: "medium",
+        }));
+      })
+    );
+    for (const br of batchResults) {
+      if (br.status === "fulfilled") allResults.push(...br.value);
+    }
+  }
+
+  // Also do a broad name search
+  const broadResults = await scrapeWebSearch(`"${name}" social media profile`);
+  for (const r of broadResults) {
+    allResults.push({
+      title: r.title, url: r.url, snippet: r.snippet,
+      source_engine: "ddg-broad", platform: detectPlatform(r.url),
+      confidence: "low",
+    });
+  }
+
+  return allResults;
+}
+
+// ── Platform detection ────────────────────────────────────────────────────
+
+const PLATFORM_MAP = [
+  ["instagram.com", "Instagram"], ["twitter.com", "Twitter/X"], ["x.com", "Twitter/X"],
+  ["facebook.com", "Facebook"], ["fb.com", "Facebook"], ["linkedin.com", "LinkedIn"],
+  ["tiktok.com", "TikTok"], ["pinterest.com", "Pinterest"], ["youtube.com", "YouTube"],
+  ["youtu.be", "YouTube"], ["reddit.com", "Reddit"], ["tumblr.com", "Tumblr"],
+  ["vk.com", "VK"], ["flickr.com", "Flickr"], ["deviantart.com", "DeviantArt"],
+  ["twitch.tv", "Twitch"], ["snapchat.com", "Snapchat"], ["threads.net", "Threads"],
+  ["bsky.app", "Bluesky"], ["mastodon.social", "Mastodon"], ["github.com", "GitHub"],
+  ["gitlab.com", "GitLab"], ["imdb.com", "IMDb"], ["wikipedia.org", "Wikipedia"],
+  ["wikidata.org", "Wikidata"], ["medium.com", "Medium"], ["quora.com", "Quora"],
+  ["spotify.com", "Spotify"], ["soundcloud.com", "SoundCloud"], ["myspace.com", "MySpace"],
+  ["weibo.com", "Weibo"], ["ok.ru", "Odnoklassniki"], ["telegram.org", "Telegram"],
+  ["t.me", "Telegram"], ["discord.gg", "Discord"], ["discord.com", "Discord"],
+  ["patreon.com", "Patreon"], ["onlyfans.com", "OnlyFans"], ["fansly.com", "Fansly"],
+  ["behance.net", "Behance"], ["dribbble.com", "Dribbble"], ["500px.com", "500px"],
+  ["ask.fm", "ASKfm"], ["about.me", "About.me"], ["linktr.ee", "Linktree"],
+  ["steamcommunity.com", "Steam"], ["letterboxd.com", "Letterboxd"],
+  ["pixiv.net", "Pixiv"], ["artstation.com", "ArtStation"], ["deviantart.com", "DeviantArt"],
+  ["last.fm", "Last.fm"], ["myanimelist.net", "MyAnimeList"], ["codepen.io", "CodePen"],
+  ["replit.com", "Replit"], ["kaggle.com", "Kaggle"], ["producthunt.com", "Product Hunt"],
+  ["dev.to", "DEV.to"], ["keybase.io", "Keybase"], ["npmjs.com", "npm"],
+  ["hub.docker.com", "Docker Hub"], ["huggingface.co", "Hugging Face"],
+  ["crates.io", "Crates.io"], ["lichess.org", "Lichess"], ["chess.com", "Chess.com"],
+  ["roblox.com", "Roblox"], ["news.ycombinator.com", "Hacker News"],
+  ["stackoverflow.com", "Stack Overflow"], ["gravatar.com", "Gravatar"],
+  ["archive.org", "Internet Archive"], ["web.archive.org", "Wayback Machine"],
+];
+
+function detectPlatform(url) {
+  if (!url) return null;
+  const u = url.toLowerCase();
+  for (const [domain, name] of PLATFORM_MAP) { if (u.includes(domain)) return name; }
+  return null;
+}
+
+// ── Investigation storage ─────────────────────────────────────────────────
+
+function saveInvestigation(data) {
+  const id = crypto.randomBytes(12).toString("hex");
+  const ts = new Date().toISOString();
+  const record = { id, created: ts, ...data };
+  const filePath = path.join(DATA_DIR, `${id}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(record, null, 2));
+  return id;
+}
+
+function loadInvestigation(id) {
+  if (!/^[a-f0-9]{24}$/.test(id)) return null;
+  const filePath = path.join(DATA_DIR, `${id}.json`);
+  if (!fs.existsSync(filePath)) return null;
+  try { return JSON.parse(fs.readFileSync(filePath, "utf-8")); }
+  catch { return null; }
+}
+
+function listInvestigations() {
+  try {
+    return fs.readdirSync(DATA_DIR)
+      .filter(f => f.endsWith(".json"))
+      .map(f => {
+        try {
+          const raw = fs.readFileSync(path.join(DATA_DIR, f), "utf-8");
+          const d = JSON.parse(raw);
+          return { id: d.id, created: d.created, query: d.query || null, label: d.label || null };
+        } catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.created) - new Date(a.created));
+  } catch { return []; }
+}
+
+function deleteInvestigation(id) {
+  if (!/^[a-f0-9]{24}$/.test(id)) return false;
+  const filePath = path.join(DATA_DIR, `${id}.json`);
+  if (!fs.existsSync(filePath)) return false;
+  try { fs.unlinkSync(filePath); return true; }
+  catch { return false; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ROUTE HANDLERS START BELOW
+// ══════════════════════════════════════════════════════════════════════════
 // ── All API lookup functions ────────────────────────────────────────────
 
 async function lookupGitHub(username) {
@@ -477,353 +915,21 @@ async function lookupBreaches(query) {
   return null;
 }
 
-// ── Username existence checking (server-side, no CORS issues) ───────────
-
-async function checkUsername(username) {
-  const platforms = [
-    { name: "Instagram", url: `https://www.instagram.com/${username}/`, check: "get" },
-    { name: "Twitter/X", url: `https://x.com/${username}`, check: "get" },
-    { name: "TikTok", url: `https://www.tiktok.com/@${username}`, check: "get" },
-    { name: "Facebook", url: `https://www.facebook.com/${username}`, check: "get" },
-    { name: "YouTube", url: `https://www.youtube.com/@${username}`, check: "get" },
-    { name: "Pinterest", url: `https://www.pinterest.com/${username}/`, check: "get" },
-    { name: "Twitch", url: `https://www.twitch.tv/${username}`, check: "get" },
-    { name: "Spotify", url: `https://open.spotify.com/user/${username}`, check: "get" },
-    { name: "SoundCloud", url: `https://soundcloud.com/${username}`, check: "get" },
-    { name: "Medium", url: `https://medium.com/@${username}`, check: "get" },
-    { name: "Dribbble", url: `https://dribbble.com/${username}`, check: "get" },
-    { name: "Behance", url: `https://www.behance.net/${username}`, check: "get" },
-    { name: "DeviantArt", url: `https://www.deviantart.com/${username}`, check: "get" },
-    { name: "Flickr", url: `https://www.flickr.com/people/${username}`, check: "get" },
-    { name: "Patreon", url: `https://www.patreon.com/${username}`, check: "get" },
-    { name: "Steam", url: `https://steamcommunity.com/id/${username}`, check: "get" },
-    { name: "Letterboxd", url: `https://letterboxd.com/${username}`, check: "get" },
-    { name: "Last.fm", url: `https://www.last.fm/user/${username}`, check: "get" },
-    { name: "MyAnimeList", url: `https://myanimelist.net/profile/${username}`, check: "get" },
-    { name: "Linktree", url: `https://linktr.ee/${username}`, check: "get" },
-    { name: "About.me", url: `https://about.me/${username}`, check: "get" },
-    { name: "Product Hunt", url: `https://www.producthunt.com/@${username}`, check: "get" },
-    { name: "CodePen", url: `https://codepen.io/${username}`, check: "get" },
-    { name: "Replit", url: `https://replit.com/@${username}`, check: "get" },
-    { name: "Kaggle", url: `https://www.kaggle.com/${username}`, check: "get" },
-    { name: "Threads", url: `https://www.threads.net/@${username}`, check: "get" },
-  ];
-
-  // Run all checks in parallel with concurrency limit
-  const CONCURRENCY = 10;
-  const results = [];
-  for (let i = 0; i < platforms.length; i += CONCURRENCY) {
-    const batch = platforms.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.allSettled(
-      batch.map(async (p) => {
-        try {
-          const status = await getCheck(p.url, 6000);
-          return { name: p.name, url: p.url, exists: status >= 200 && status < 400, status };
-        } catch {
-          return { name: p.name, url: p.url, exists: false, status: 0 };
-        }
-      })
-    );
-    for (const r of batchResults) {
-      if (r.status === "fulfilled") results.push(r.value);
-    }
-  }
-  return results;
+// Confidence scoring for face scan matches
+function scoreFaceScanMatch(m, identifiedName) {
+  // High: direct engine match with identified person, username-check confirmed
+  if (m.source_engine === "username-check") return "high";
+  if (m.source_engine === "yandex-faces" || m.source_engine === "facecheck") return "high";
+  if (m.source_engine === "yandex" && m.title && identifiedName && m.title.toLowerCase().includes(identifiedName.toLowerCase())) return "high";
+  if (m.source_engine === "google" && m.title && identifiedName && m.title.toLowerCase().includes(identifiedName.toLowerCase())) return "high";
+  // Medium: direct engine results, site-scoped searches
+  if (["yandex", "google", "bing", "tineye", "baidu", "search4faces", "saucenao"].includes(m.source_engine)) return "medium";
+  if (m.source_engine === "ddg-site" && m.platform) return "medium";
+  if (m.source_engine === "people-search") return "medium";
+  if (m.source_engine === "deep-crawl" && m.platform) return "medium";
+  // Low: generic web, images from search pages
+  return "low";
 }
-
-// ── DuckDuckGo HTML search scrape (no API key needed) ───────────────────
-
-async function scrapeWebSearch(query) {
-  try {
-    const { status, data } = await fetchText(
-      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
-      { Accept: "text/html" },
-      12000
-    );
-    if (status !== 200 || !data) return [];
-
-    const results = [];
-    // Parse DuckDuckGo HTML results (simple regex-based extraction)
-    const linkRegex = /<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
-    const snippetRegex = /<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
-
-    const links = [...data.matchAll(linkRegex)];
-    const snippets = [...data.matchAll(snippetRegex)];
-
-    for (let i = 0; i < Math.min(links.length, 10); i++) {
-      let url = links[i][1];
-      // DuckDuckGo wraps URLs in redirect
-      const uddg = url.match(/uddg=([^&]+)/);
-      if (uddg) url = decodeURIComponent(uddg[1]);
-
-      const title = links[i][2].replace(/<[^>]*>/g, "").trim();
-      const snippet = snippets[i] ? snippets[i][1].replace(/<[^>]*>/g, "").trim() : "";
-
-      if (title && url.startsWith("http")) {
-        results.push({ title, url, snippet });
-      }
-    }
-    return results;
-  } catch { return []; }
-}
-
-// ── Reverse image search (server-side proxy) ────────────────────────────
-
-function buildMultipart(fields, fileField, fileBuffer, filename, contentType) {
-  const boundary = "----PersonLookup" + crypto.randomBytes(16).toString("hex");
-  const parts = [];
-  for (const [key, val] of Object.entries(fields)) {
-    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${val}\r\n`));
-  }
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`));
-  parts.push(fileBuffer);
-  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-  return { boundary, body: Buffer.concat(parts) };
-}
-
-function proxyReverseSearch(engine, fileBuffer, filename, contentType) {
-  return new Promise((resolve) => {
-    let host, postPath, fileField, extraFields;
-    switch (engine) {
-      case "google":
-        host = "www.google.com"; postPath = "/searchbyimage/upload";
-        fileField = "encoded_image"; extraFields = { image_url: "", sbisrc: "cr_1" };
-        break;
-      case "yandex":
-        host = "yandex.com"; postPath = "/images/search?rpt=imageview&format=json";
-        fileField = "upfile"; extraFields = {};
-        break;
-      case "tineye":
-        host = "tineye.com"; postPath = "/search";
-        fileField = "image"; extraFields = {};
-        break;
-      default: return resolve({ engine, status: "error", error: "Unknown engine" });
-    }
-    const { boundary, body } = buildMultipart(extraFields, fileField, fileBuffer, filename, contentType);
-    const req = https.request({
-      hostname: host, path: postPath, method: "POST",
-      headers: {
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        "Content-Length": body.length,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-    }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          let loc = res.headers.location;
-          if (loc.startsWith("/")) loc = `https://${host}${loc}`;
-          resolve({ engine, redirect: loc, status: "redirect" });
-        } else {
-          resolve({ engine, status: "html", statusCode: res.statusCode });
-        }
-      });
-    });
-    req.on("error", (err) => resolve({ engine, status: "error", error: err.message }));
-    req.setTimeout(15000, () => { req.destroy(); resolve({ engine, status: "error", error: "timeout" }); });
-    req.write(body);
-    req.end();
-  });
-}
-
-// ── Privacy exposure score (server-side) ────────────────────────────────
-
-function calculateExposureScore(results, usernameResults) {
-  let score = 0;
-  const factors = [];
-  for (const r of results) {
-    const s = r.source || "";
-    if (s === "GitHub") { score += 15; factors.push("GitHub profile exposed");
-      if (r.email) { score += 10; factors.push("Email visible on GitHub"); }
-      if (r.location) { score += 5; factors.push("Location on GitHub"); }
-    }
-    if (s === "Reddit") { score += 10; factors.push("Reddit account found"); }
-    if (s === "Wikipedia") { score += 5; factors.push("Wikipedia page exists"); }
-    if (s === "Stack Overflow") { score += 8; factors.push("Stack Overflow profile"); }
-    if (s === "Hacker News") { score += 8; factors.push("Hacker News account"); }
-    if (s === "Gravatar") { score += 10; factors.push("Gravatar profile"); }
-    if (s === "GitLab") { score += 8; factors.push("GitLab profile"); }
-    if (s === "Keybase") { score += 10; factors.push("Keybase (links many accounts)"); }
-    if (s === "Docker Hub") { score += 5; factors.push("Docker Hub account"); }
-    if (s === "npm") { score += 5; factors.push("npm profile"); }
-    if (s === "DEV.to") { score += 5; factors.push("DEV.to profile"); }
-    if (s.includes("Mastodon")) { score += 8; factors.push("Fediverse presence"); }
-    if (s.includes("GitHub Repos")) { score += 5; factors.push("Public repos reveal tech stack"); }
-    if (s.includes("GitHub Activity")) { score += 8; factors.push("Activity patterns reveal timezone"); }
-    if (s.includes("GitHub Gists")) { score += 5; factors.push("Public gists"); }
-    if (s.includes("Commit Emails")) { score += 15; factors.push("Real email in git commits"); }
-    if (s.includes("DuckDuckGo")) { score += 5; factors.push("Structured info on search engines"); }
-    if (s.includes("Lichess") || s.includes("Chess.com")) { score += 3; factors.push("Gaming profile"); }
-    if (s.includes("Roblox")) { score += 3; factors.push("Roblox profile"); }
-  }
-  // Username existence results
-  if (usernameResults) {
-    const found = usernameResults.filter(r => r.exists);
-    if (found.length > 5) { score += 15; factors.push(`Username found on ${found.length} platforms`); }
-    else if (found.length > 0) { score += 8; factors.push(`Username found on ${found.length} platforms`); }
-    for (const r of found) {
-      if (["Instagram", "Facebook", "Twitter/X", "TikTok", "LinkedIn"].includes(r.name)) {
-        score += 3; factors.push(`${r.name} profile exists`);
-      }
-    }
-  }
-  return { score: Math.min(score, 100), factors };
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-//  API ENDPOINTS
-// ══════════════════════════════════════════════════════════════════════════
-
-// ── Full text search endpoint ───────────────────────────────────────────
-
-app.post("/api/search", async (req, res) => {
-  const { query } = req.body;
-  if (!query || typeof query !== "string" || !query.trim()) {
-    return res.status(400).json({ error: "Query is required" });
-  }
-
-  const sanitized = query.trim().slice(0, 100);
-  const isUsername = !/\s/.test(sanitized);
-  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized);
-  const isDomain = /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(sanitized) && !isEmail;
-
-  // SSE-style streaming: send results as they come in
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-
-  function send(event, data) {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  }
-
-  const allResults = [];
-  let usernameCheckResults = null;
-
-  // Phase 1: Core
-  send("phase", { phase: 1, label: "Core platform search..." });
-
-  const coreTasks = [];
-  coreTasks.push(lookupWikipedia(sanitized));
-  coreTasks.push(lookupDuckDuckGo(sanitized));
-  if (isUsername) {
-    coreTasks.push(lookupGitHub(sanitized));
-    coreTasks.push(lookupReddit(sanitized));
-    coreTasks.push(lookupStackOverflow(sanitized));
-    coreTasks.push(lookupHackerNews(sanitized));
-  } else {
-    coreTasks.push(lookupGitHubByName(sanitized));
-    coreTasks.push(lookupStackOverflow(sanitized));
-  }
-  if (isEmail) coreTasks.push(lookupGravatar(sanitized));
-  if (isDomain) {
-    coreTasks.push(lookupDNS(sanitized));
-    coreTasks.push(lookupRDAP(sanitized));
-    coreTasks.push(lookupIPGeo(sanitized));
-    coreTasks.push(lookupWayback(sanitized));
-  }
-
-  let settled = await Promise.allSettled(coreTasks);
-  for (const r of settled) {
-    if (r.status === "fulfilled" && r.value) {
-      const items = Array.isArray(r.value) ? r.value : [r.value];
-      allResults.push(...items);
-      send("results", { results: items });
-    }
-  }
-
-  // Phase 2: Deep
-  send("phase", { phase: 2, label: `Deep platform search (${allResults.length} found)...` });
-
-  const deepTasks = [];
-  if (isUsername) {
-    deepTasks.push(lookupGitLab(sanitized));
-    deepTasks.push(lookupKeybase(sanitized));
-    deepTasks.push(lookupNpm(sanitized));
-    deepTasks.push(lookupDockerHub(sanitized));
-    deepTasks.push(lookupDevTo(sanitized));
-    deepTasks.push(lookupLichess(sanitized));
-    deepTasks.push(lookupChessCom(sanitized));
-    deepTasks.push(lookupRoblox(sanitized));
-    deepTasks.push(lookupMastodon(sanitized));
-    deepTasks.push(lookupGravatar(sanitized));
-    deepTasks.push(lookupCratesIO(sanitized));
-    deepTasks.push(lookupPyPI(sanitized));
-    deepTasks.push(lookupHuggingFace(sanitized));
-  }
-  deepTasks.push(lookupWikidata(sanitized));
-  deepTasks.push(lookupOpenLibrary(sanitized));
-  deepTasks.push(lookupArchiveOrg(sanitized));
-
-  settled = await Promise.allSettled(deepTasks);
-  for (const r of settled) {
-    if (r.status === "fulfilled" && r.value) {
-      const items = Array.isArray(r.value) ? r.value : [r.value];
-      allResults.push(...items);
-      send("results", { results: items });
-    }
-  }
-
-  // Phase 3: GitHub deep + web search
-  send("phase", { phase: 3, label: `Activity analysis & web search (${allResults.length} found)...` });
-
-  const analysisTasks = [];
-  if (isUsername && allResults.some(r => r.source === "GitHub")) {
-    analysisTasks.push(lookupGitHubRepos(sanitized));
-    analysisTasks.push(lookupGitHubGists(sanitized));
-    analysisTasks.push(lookupGitHubEvents(sanitized));
-    analysisTasks.push(lookupGitHubEmails(sanitized));
-  }
-  if (isUsername || isEmail) analysisTasks.push(lookupBreaches(sanitized));
-
-  // Web search scrape
-  const webSearchPromise = scrapeWebSearch(sanitized);
-
-  settled = await Promise.allSettled(analysisTasks);
-  for (const r of settled) {
-    if (r.status === "fulfilled" && r.value) {
-      const items = Array.isArray(r.value) ? r.value : [r.value];
-      allResults.push(...items);
-      send("results", { results: items });
-    }
-  }
-
-  const webResults = await webSearchPromise;
-  if (webResults.length) {
-    send("web_results", { results: webResults });
-  }
-
-  // Phase 4: Username existence check (server-side)
-  if (isUsername) {
-    send("phase", { phase: 4, label: `Checking username across 25+ platforms...` });
-    usernameCheckResults = await checkUsername(sanitized);
-    send("username_check", { results: usernameCheckResults });
-  }
-
-  // Final: exposure score
-  const exposure = calculateExposureScore(allResults, usernameCheckResults);
-  send("complete", { total: allResults.length, exposure });
-
-  res.end();
-});
-
-// ── Image upload + analysis ─────────────────────────────────────────────
-
-app.post("/api/upload", upload.single("image"), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No image uploaded" });
-  res.json({
-    filename: req.file.filename,
-    url: `/uploads/${req.file.filename}`,
-    size: req.file.size,
-    mimetype: req.file.mimetype,
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════
-//  FACE SCANNING PIPELINE v2 — Search EVERYWHERE
-// ══════════════════════════════════════════════════════════════════════════
-
-
 // ══════════════════════════════════════════════════════════════════════════
 //  FACE SCANNING PIPELINE v3 — DEEP SEARCH EVERYWHERE
 // ══════════════════════════════════════════════════════════════════════════
@@ -899,35 +1005,7 @@ async function withRetry(fn, retries = 2) {
   return await fn();
 }
 
-// ── Platform detection (45+ platforms) ──────────────────────────────────
-
-const PLATFORM_MAP = [
-  ["instagram.com", "Instagram"], ["twitter.com", "Twitter/X"], ["x.com", "Twitter/X"],
-  ["facebook.com", "Facebook"], ["fb.com", "Facebook"], ["linkedin.com", "LinkedIn"],
-  ["tiktok.com", "TikTok"], ["pinterest.com", "Pinterest"], ["youtube.com", "YouTube"],
-  ["youtu.be", "YouTube"], ["reddit.com", "Reddit"], ["tumblr.com", "Tumblr"],
-  ["vk.com", "VK"], ["flickr.com", "Flickr"], ["deviantart.com", "DeviantArt"],
-  ["twitch.tv", "Twitch"], ["snapchat.com", "Snapchat"], ["threads.net", "Threads"],
-  ["bsky.app", "Bluesky"], ["mastodon.social", "Mastodon"], ["github.com", "GitHub"],
-  ["imdb.com", "IMDb"], ["wikipedia.org", "Wikipedia"], ["wikidata.org", "Wikidata"],
-  ["medium.com", "Medium"], ["quora.com", "Quora"], ["spotify.com", "Spotify"],
-  ["soundcloud.com", "SoundCloud"], ["myspace.com", "MySpace"], ["weibo.com", "Weibo"],
-  ["ok.ru", "Odnoklassniki"], ["telegram.org", "Telegram"], ["t.me", "Telegram"],
-  ["discord.gg", "Discord"], ["patreon.com", "Patreon"], ["onlyfans.com", "OnlyFans"],
-  ["behance.net", "Behance"], ["dribbble.com", "Dribbble"], ["500px.com", "500px"],
-  ["ask.fm", "ASKfm"], ["about.me", "About.me"], ["linktree", "Linktree"],
-  ["steamcommunity.com", "Steam"], ["letterboxd.com", "Letterboxd"],
-  ["pixiv.net", "Pixiv"], ["artstation.com", "ArtStation"],
-  ["pornhub.com", "Pornhub"], ["xvideos.com", "XVideos"], ["xhamster.com", "xHamster"],
-  ["onlyfans.com", "OnlyFans"], ["fansly.com", "Fansly"],
-];
-
-function detectPlatform(url) {
-  if (!url) return null;
-  const u = url.toLowerCase();
-  for (const [domain, name] of PLATFORM_MAP) { if (u.includes(domain)) return name; }
-  return null;
-}
+// detectPlatform and PLATFORM_MAP defined in srv_part1
 
 // ── Username extraction from URLs ───────────────────────────────────────
 function extractUsernameFromUrl(url) {
@@ -1364,49 +1442,20 @@ async function crossCheckUsername(username) {
     { name: "Fansly", url: `https://fansly.com/${username}` },
   ];
   const found = [];
-  for (let i = 0; i < profiles.length; i += 10) {
-    const batch = profiles.slice(i, i + 10);
+  for (let i = 0; i < profiles.length; i += 8) {
+    const batch = profiles.slice(i, i + 8);
     const results = await Promise.allSettled(batch.map(async (p) => {
-      const status = await getCheck(p.url, 6000);
-      return { ...p, exists: status >= 200 && status < 400, status };
+      const check = await smartCheckUsername(p.name, p.url);
+      return { ...p, exists: check.exists, confidence: check.confidence };
     }));
     for (const r of results) {
       if (r.status === "fulfilled" && r.value.exists) {
-        found.push({ title: `${r.value.name}: @${username}`, url: r.value.url, platform: r.value.name, source_engine: "username-check" });
+        found.push({ title: `${r.value.name}: @${username}`, url: r.value.url, platform: r.value.name, source_engine: "username-check", confidence: r.value.confidence });
       }
     }
   }
   return found;
 }
-
-// ══════════════════════════════════════════════════════════════════════════
-//  API ENDPOINTS
-// ══════════════════════════════════════════════════════════════════════════
-
-app.get("/api/proxy-image", (req, res) => {
-  const url = req.query.url;
-  if (!url || !url.startsWith("http")) return res.status(400).send("Invalid URL");
-  try {
-    const parsed = new URL(url);
-    const driver = parsed.protocol === "https:" ? https : http;
-    const proxyReq = driver.get({
-      hostname: parsed.hostname, path: parsed.pathname + parsed.search,
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*;q=0.8", "Referer": parsed.origin },
-    }, (proxyRes) => {
-      if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
-        const loc = proxyRes.headers.location.startsWith("/") ? parsed.protocol + "//" + parsed.hostname + proxyRes.headers.location : proxyRes.headers.location;
-        proxyRes.resume();
-        try { (new URL(loc).protocol === "https:" ? https : http).get(loc, { headers: { "User-Agent": "Mozilla/5.0" } }, (rRes) => { res.setHeader("Content-Type", rRes.headers["content-type"] || "image/jpeg"); res.setHeader("Cache-Control", "public, max-age=3600"); rRes.pipe(res); }).on("error", () => res.status(502).end()); } catch { res.status(502).end(); }
-        return;
-      }
-      res.setHeader("Content-Type", proxyRes.headers["content-type"] || "image/jpeg");
-      res.setHeader("Cache-Control", "public, max-age=3600");
-      proxyRes.pipe(res);
-    });
-    proxyReq.on("error", () => res.status(502).end());
-    proxyReq.setTimeout(10000, () => { proxyReq.destroy(); res.status(504).end(); });
-  } catch { res.status(400).end(); }
-});
 
 // ══════════════════════════════════════════════════════════════════════════
 //  MAIN FACE SCAN — 8 phases, 9 engines, DEEP search everywhere
@@ -1590,8 +1639,11 @@ app.post("/api/face-scan", async (req, res) => {
   const deduped = [];
   for (const m of allMatches) {
     const key = (m.url || "").replace(/^https?:\/\/(?:www\.)?/, "").split("?")[0].split("#")[0].toLowerCase().replace(/\/+$/, "");
-    if (key && key.length > 3 && !seen.has(key)) { seen.add(key); if (!m.platform) m.platform = detectPlatform(m.url); deduped.push(m); }
+    if (key && key.length > 3 && !seen.has(key)) { seen.add(key); if (!m.platform) m.platform = detectPlatform(m.url); m.confidence = scoreFaceScanMatch(m, identifiedName); deduped.push(m); }
   }
+  // Sort by confidence: high first, then medium, then low
+  const confOrder = { high: 0, medium: 1, low: 2 };
+  deduped.sort((a, b) => (confOrder[a.confidence] || 2) - (confOrder[b.confidence] || 2));
   const byPlatform = {};
   const otherMatches = [];
   for (const m of deduped) { if (m.platform) { if (!byPlatform[m.platform]) byPlatform[m.platform] = []; byPlatform[m.platform].push(m); } else otherMatches.push(m); }
@@ -1611,6 +1663,240 @@ app.post("/api/face-scan", async (req, res) => {
   res.end();
 });
 
+
+// ══════════════════════════════════════════════════════════════════════════
+//  API ROUTE HANDLERS
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── Investigation CRUD ───────────────────────────────────────────────────
+
+app.get("/api/investigations", (req, res) => {
+  try {
+    const list = listInvestigations();
+    res.json(list);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/investigations", (req, res) => {
+  try {
+    const id = saveInvestigation(req.body);
+    res.json({ id, success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/investigations/:id", (req, res) => {
+  try {
+    const data = loadInvestigation(req.params.id);
+    if (!data) return res.status(404).json({ error: "Not found" });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete("/api/investigations/:id", (req, res) => {
+  try {
+    deleteInvestigation(req.params.id);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Fetch image from URL ─────────────────────────────────────────────────
+
+app.post("/api/fetch-image-url", async (req, res) => {
+  const { url } = req.body;
+  if (!url || !url.startsWith("http")) return res.status(400).json({ error: "Valid URL required" });
+  try {
+    const response = await chainRequest(url, { timeout: 20000 });
+    if (!response.body || response.statusCode !== 200) {
+      // Maybe the URL is a page, not an image - try to extract og:image
+      const ogMatch = (response.body || "").match(/<meta[^>]+property="og:image"[^>]*content="([^"]+)"/i);
+      if (ogMatch) {
+        // Fetch the og:image
+        const imgResp = await new Promise((resolve) => {
+          const parsed = new URL(ogMatch[1]);
+          const driver = parsed.protocol === "https:" ? https : http;
+          const req2 = driver.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: { "User-Agent": "Mozilla/5.0" } }, (r) => {
+            const chunks = []; r.on("data", c => chunks.push(c));
+            r.on("end", () => resolve({ status: r.statusCode, buffer: Buffer.concat(chunks), type: r.headers["content-type"] }));
+          });
+          req2.on("error", () => resolve(null));
+          req2.setTimeout(15000, () => { req2.destroy(); resolve(null); });
+        });
+        if (imgResp && imgResp.status === 200) {
+          const ext = (imgResp.type || "").includes("png") ? ".png" : (imgResp.type || "").includes("webp") ? ".webp" : ".jpg";
+          const filename = crypto.randomBytes(16).toString("hex") + ext;
+          const filePath = path.join(UPLOADS_DIR, filename);
+          fs.writeFileSync(filePath, imgResp.buffer);
+          return res.json({ filename, url: `/uploads/${filename}`, size: imgResp.buffer.length, source_url: ogMatch[1], mimetype: imgResp.type });
+        }
+      }
+      return res.status(400).json({ error: "Could not fetch image from URL" });
+    }
+    // Check if response is actually an image
+    const ct = response.headers?.["content-type"] || "";
+    if (ct.includes("image")) {
+      const ext = ct.includes("png") ? ".png" : ct.includes("webp") ? ".webp" : ct.includes("gif") ? ".gif" : ".jpg";
+      const filename = crypto.randomBytes(16).toString("hex") + ext;
+      const filePath = path.join(UPLOADS_DIR, filename);
+      fs.writeFileSync(filePath, Buffer.from(response.body, "binary"));
+      return res.json({ filename, url: `/uploads/${filename}`, size: response.body.length, source_url: url, mimetype: ct });
+    }
+    // Not an image - try og:image extraction
+    const ogMatch = response.body.match(/<meta[^>]+property="og:image"[^>]*content="([^"]+)"/i);
+    if (ogMatch) {
+      const imgUrl = ogMatch[1].startsWith("//") ? "https:" + ogMatch[1] : ogMatch[1];
+      const imgResp = await new Promise((resolve) => {
+        try {
+          const parsed = new URL(imgUrl);
+          const driver = parsed.protocol === "https:" ? https : http;
+          const req2 = driver.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: { "User-Agent": "Mozilla/5.0" } }, (r) => {
+            const chunks = []; r.on("data", c => chunks.push(c));
+            r.on("end", () => resolve({ status: r.statusCode, buffer: Buffer.concat(chunks), type: r.headers["content-type"] }));
+          });
+          req2.on("error", () => resolve(null));
+          req2.setTimeout(15000, () => { req2.destroy(); resolve(null); });
+        } catch { resolve(null); }
+      });
+      if (imgResp && imgResp.status === 200) {
+        const ext = (imgResp.type || "").includes("png") ? ".png" : ".jpg";
+        const filename = crypto.randomBytes(16).toString("hex") + ext;
+        const filePath = path.join(UPLOADS_DIR, filename);
+        fs.writeFileSync(filePath, imgResp.buffer);
+        return res.json({ filename, url: `/uploads/${filename}`, size: imgResp.buffer.length, source_url: imgUrl, mimetype: imgResp.type });
+      }
+    }
+    return res.status(400).json({ error: "URL does not contain an image" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Image proxy ──────────────────────────────────────────────────────────
+
+app.get("/api/proxy-image", (req, res) => {
+  const url = req.query.url;
+  if (!url || !url.startsWith("http")) return res.status(400).send("Invalid URL");
+  try {
+    const parsed = new URL(url);
+    const driver = parsed.protocol === "https:" ? https : http;
+    const proxyReq = driver.get({
+      hostname: parsed.hostname, path: parsed.pathname + parsed.search,
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*;q=0.8", "Referer": parsed.origin },
+    }, (proxyRes) => {
+      if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers.location) {
+        const loc = proxyRes.headers.location.startsWith("/") ? parsed.protocol + "//" + parsed.hostname + proxyRes.headers.location : proxyRes.headers.location;
+        proxyRes.resume();
+        try { (new URL(loc).protocol === "https:" ? https : http).get(loc, { headers: { "User-Agent": "Mozilla/5.0" } }, (rRes) => { res.setHeader("Content-Type", rRes.headers["content-type"] || "image/jpeg"); res.setHeader("Cache-Control", "public, max-age=3600"); rRes.pipe(res); }).on("error", () => res.status(502).end()); } catch { res.status(502).end(); }
+        return;
+      }
+      res.setHeader("Content-Type", proxyRes.headers["content-type"] || "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      proxyRes.pipe(res);
+    });
+    proxyReq.on("error", () => res.status(502).end());
+    proxyReq.setTimeout(10000, () => { proxyReq.destroy(); res.status(504).end(); });
+  } catch { res.status(400).end(); }
+});
+
+// ── Image upload ─────────────────────────────────────────────────────────
+
+app.post("/api/upload", upload.single("image"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+  res.json({ filename: req.file.filename, url: `/uploads/${req.file.filename}`, size: req.file.size, mimetype: req.file.mimetype });
+});
+
+// ── Text search endpoint (SSE) ───────────────────────────────────────────
+
+app.post("/api/search", async (req, res) => {
+  const { query } = req.body;
+  if (!query || typeof query !== "string" || !query.trim()) return res.status(400).json({ error: "Query is required" });
+
+  const sanitized = query.trim().slice(0, 100);
+  const isUsername = !/\s/.test(sanitized);
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized);
+  const isDomain = /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(sanitized) && !isEmail;
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  function send(event, data) { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
+
+  const allResults = [];
+  let usernameCheckResults = null;
+
+  // Phase 1: Core
+  send("phase", { phase: 1, label: "Core platform search..." });
+  const coreTasks = [];
+  coreTasks.push(lookupWikipedia(sanitized));
+  coreTasks.push(lookupDuckDuckGo(sanitized));
+  if (isUsername) {
+    coreTasks.push(lookupGitHub(sanitized), lookupReddit(sanitized), lookupStackOverflow(sanitized), lookupHackerNews(sanitized));
+  } else {
+    coreTasks.push(lookupGitHubByName(sanitized), lookupStackOverflow(sanitized));
+  }
+  if (isEmail) coreTasks.push(lookupGravatar(sanitized));
+  if (isDomain) { coreTasks.push(lookupDNS(sanitized), lookupRDAP(sanitized), lookupIPGeo(sanitized), lookupWayback(sanitized)); }
+
+  let settled = await Promise.allSettled(coreTasks);
+  for (const r of settled) {
+    if (r.status === "fulfilled" && r.value) {
+      const items = Array.isArray(r.value) ? r.value : [r.value];
+      for (const item of items) item.confidence = calculateConfidence(item);
+      allResults.push(...items);
+      send("results", { results: items });
+    }
+  }
+
+  // Phase 2: Deep
+  send("phase", { phase: 2, label: `Deep platform search (${allResults.length} found)...` });
+  const deepTasks = [];
+  if (isUsername) {
+    deepTasks.push(lookupGitLab(sanitized), lookupKeybase(sanitized), lookupNpm(sanitized), lookupDockerHub(sanitized),
+      lookupDevTo(sanitized), lookupLichess(sanitized), lookupChessCom(sanitized), lookupRoblox(sanitized),
+      lookupMastodon(sanitized), lookupGravatar(sanitized), lookupCratesIO(sanitized), lookupPyPI(sanitized), lookupHuggingFace(sanitized));
+  }
+  deepTasks.push(lookupWikidata(sanitized), lookupOpenLibrary(sanitized), lookupArchiveOrg(sanitized));
+
+  settled = await Promise.allSettled(deepTasks);
+  for (const r of settled) {
+    if (r.status === "fulfilled" && r.value) {
+      const items = Array.isArray(r.value) ? r.value : [r.value];
+      for (const item of items) item.confidence = calculateConfidence(item);
+      allResults.push(...items);
+      send("results", { results: items });
+    }
+  }
+
+  // Phase 3: GitHub deep + web search
+  send("phase", { phase: 3, label: `Activity analysis & web search (${allResults.length} found)...` });
+  const analysisTasks = [];
+  if (isUsername && allResults.some(r => r.source === "GitHub")) {
+    analysisTasks.push(lookupGitHubRepos(sanitized), lookupGitHubGists(sanitized), lookupGitHubEvents(sanitized), lookupGitHubEmails(sanitized));
+  }
+  if (isUsername || isEmail) analysisTasks.push(lookupBreaches(sanitized));
+  const webSearchPromise = scrapeWebSearch(sanitized);
+
+  settled = await Promise.allSettled(analysisTasks);
+  for (const r of settled) {
+    if (r.status === "fulfilled" && r.value) {
+      const items = Array.isArray(r.value) ? r.value : [r.value];
+      for (const item of items) item.confidence = calculateConfidence(item);
+      allResults.push(...items);
+      send("results", { results: items });
+    }
+  }
+
+  const webResults = await webSearchPromise;
+  if (webResults.length) send("web_results", { results: webResults });
+
+  // Phase 4: Username existence check
+  if (isUsername) {
+    send("phase", { phase: 4, label: `Checking username across 26+ platforms...` });
+    usernameCheckResults = await checkUsername(sanitized);
+    send("username_check", { results: usernameCheckResults });
+  }
+
+  const exposure = calculateExposureScore(allResults, usernameCheckResults);
+  send("complete", { total: allResults.length, exposure });
+  res.end();
+});
 // ══════════════════════════════════════════════════════════════════════════
 //  MEGA DEEP SEARCH — takes multiple accounts, builds full person profile
 // ══════════════════════════════════════════════════════════════════════════
@@ -2303,6 +2589,18 @@ app.post("/api/mega-search", async (req, res) => {
     return true;
   });
 
+  // Score confidence for each account
+  for (const acc of profile.accounts) {
+    if (acc.data?.exists === true && !acc.data?.title) acc.confidence = "medium";
+    else if (acc.data?.profile_url || acc.avatar) acc.confidence = "high";
+    else if (acc.data?.title || acc.data?.snippet) acc.confidence = "medium";
+    else acc.confidence = "low";
+  }
+  profile.accounts.sort((a, b) => {
+    const order = { high: 0, medium: 1, low: 2 };
+    return (order[a.confidence] || 2) - (order[b.confidence] || 2);
+  });
+
   send("complete", {
     profile: {
       name: profile.name,
@@ -2351,7 +2649,7 @@ setInterval(() => {
     try {
       const filePath = path.join(UPLOADS_DIR, file);
       const stat = fs.statSync(filePath);
-      if (now - stat.mtimeMs > 30 * 60 * 1000) fs.unlinkSync(filePath);
+      if (now - stat.mtimeMs > 60 * 60 * 1000) fs.unlinkSync(filePath); // 1 hour
     } catch {}
   }
 }, 10 * 60 * 1000);
@@ -2359,7 +2657,7 @@ setInterval(() => {
 // ── Start ───────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`Person Lookup running at http://localhost:${PORT}`);
-  console.log(`Face scan v3: 9 engines (Google, Yandex, Bing, TinEye, Baidu, SauceNAO, KarmaDecay, FaceCheck, search4faces)`);
-  console.log(`+ deep social search (31 platforms) + username cross-check (26 sites) + NSFW sites + deep crawling`);
+  console.log(`Person Lookup v4 running at http://localhost:${PORT}`);
+  console.log(`Face scan: 9 engines | 8-phase deep pipeline | confidence scoring`);
+  console.log(`Investigation tracking | URL image fetch | smart username checking`);
 });
