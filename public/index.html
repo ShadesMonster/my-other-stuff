@@ -441,9 +441,9 @@
             </button>
           </div>
           <div class="search-all-row">
-            <button class="btn btn-sm btn-green" onclick="searchAllEngines()">Search All Engines</button>
-            <button class="btn btn-sm btn-outline" onclick="serverReverseSearch()">Auto-Search (Server)</button>
-            <span class="note">Allow popups for &ldquo;Search All&rdquo; to work</span>
+            <button class="btn btn-sm btn-green" onclick="searchAllEngines()">Open All in Browser</button>
+            <button class="btn btn-sm" onclick="serverReverseSearch()" style="background:var(--accent)">Deep Search (Server-Side)</button>
+            <span class="note">Browser buttons open new tabs &bull; Server search finds social profiles</span>
           </div>
           <div id="serverSearchResults" class="hidden" style="margin-top:14px"></div>
         </div>
@@ -961,11 +961,11 @@
       }
     }
 
-    // ── Reverse Image Search: form submission via DataTransfer ──
+    // ── Reverse Image Search: open search engine pages ──
     function searchEngine(engine) {
       if (!uploadedFile) { alert("Upload an image first."); return; }
 
-      // Create a form and submit it to the search engine
+      // For engines that support direct form upload, use DataTransfer
       const form = document.createElement("form");
       form.method = "POST";
       form.enctype = "multipart/form-data";
@@ -974,26 +974,36 @@
 
       const fi = document.createElement("input");
       fi.type = "file";
-
-      // Use DataTransfer to set files programmatically
       const dt = new DataTransfer();
       dt.items.add(uploadedFile);
 
       switch (engine) {
-        case "google":
-          form.action = "https://www.google.com/searchbyimage/upload";
-          fi.name = "encoded_image";
-          fi.files = dt.files;
-          form.appendChild(fi);
-          addHidden(form, "image_url", "");
-          addHidden(form, "sbisrc", "cr_1");
-          break;
+        case "google": {
+          // Google Lens — upload via base64 data URL
+          const reader = new FileReader();
+          reader.onload = function() {
+            const base64 = reader.result;
+            // Use Google Lens URL with base64 image
+            form.action = "https://lens.google.com/upload";
+            form.method = "POST";
+            fi.name = "encoded_image";
+            fi.files = dt.files;
+            form.appendChild(fi);
+            addHidden(form, "ep", "ccm");
+            addHidden(form, "s", "csp");
+            addHidden(form, "st", String(Date.now()));
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+          };
+          reader.readAsDataURL(uploadedFile);
+          return;
+        }
         case "yandex":
-          form.action = "https://yandex.com/images/search";
+          form.action = "https://yandex.com/images/search?rpt=imageview";
           fi.name = "upfile";
           fi.files = dt.files;
           form.appendChild(fi);
-          addHidden(form, "rpt", "imageview");
           break;
         case "tineye":
           form.action = "https://tineye.com/search";
@@ -1008,11 +1018,9 @@
           form.appendChild(fi);
           break;
         case "baidu":
-          // Baidu uses URL-based search; open upload page
           window.open("https://graph.baidu.com/pcpage/index?tpl_from=pc", "_blank");
           return;
         case "karmadecay":
-          // KarmaDecay uses URL-based, open the upload page
           window.open("http://karmadecay.com/", "_blank");
           return;
       }
@@ -1037,47 +1045,146 @@
         if (i >= engines.length) return;
         searchEngine(engines[i]);
         i++;
-        setTimeout(next, 800); // Small delay to avoid popup blocking
+        setTimeout(next, 800);
       }
       next();
     }
 
-    // ── Server-side reverse search ──
+    // ── Server-side reverse image search (SSE streaming) ──
     async function serverReverseSearch() {
       if (!uploadedFilename) { alert("Upload an image first."); return; }
 
       const div = document.getElementById("serverSearchResults");
       div.classList.remove("hidden");
-      div.innerHTML = '<div class="status"><span class="spinner"></span> Submitting image to search engines via server...</div>';
+      div.innerHTML = '<div class="status"><span class="spinner"></span> Searching reverse image engines from server... This may take 30-60 seconds.</div>';
 
       try {
-        const res = await fetch("/api/reverse-search", {
+        const response = await fetch("/api/reverse-search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ filename: uploadedFilename }),
         });
-        const data = await res.json();
 
-        let html = '<div style="font-size:0.88rem">';
-        for (const r of data.results) {
-          const icon = r.status === "redirect" ? "&#9989;" : r.status === "html" ? "&#9888;&#65039;" : "&#10060;";
-          html += '<div style="padding:8px 0; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px">';
-          html += '<span>' + icon + '</span>';
-          html += '<strong>' + escapeHtml(r.engine) + '</strong> &mdash; ';
-          if (r.redirect) {
-            html += '<a href="' + escapeHtml(r.redirect) + '" target="_blank" rel="noopener" style="color:var(--accent2)">View Results &rarr;</a>';
-          } else if (r.status === "html") {
-            html += '<span style="color:var(--orange)">Engine returned results page (status ' + r.statusCode + '). Use direct form submission above for best results.</span>';
-          } else {
-            html += '<span style="color:var(--danger)">' + escapeHtml(r.error || "Failed") + '</span>';
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let engineResults = [];
+        let identifiedName = null;
+        let finalData = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Parse SSE events from buffer
+          const events = buffer.split("\n\n");
+          buffer = events.pop(); // keep incomplete event in buffer
+
+          for (const event of events) {
+            const lines = event.split("\n");
+            let eventType = "", eventData = "";
+            for (const line of lines) {
+              if (line.startsWith("event: ")) eventType = line.slice(7);
+              if (line.startsWith("data: ")) eventData = line.slice(6);
+            }
+            if (!eventType || !eventData) continue;
+
+            try {
+              const data = JSON.parse(eventData);
+
+              if (eventType === "phase") {
+                div.innerHTML = '<div class="status"><span class="spinner"></span> ' + escapeHtml(data.label) + '</div>' + renderServerResults(engineResults, identifiedName, null);
+              }
+
+              if (eventType === "engine_result") {
+                engineResults.push(data);
+                div.innerHTML = '<div class="status"><span class="spinner"></span> Searching engines... (' + engineResults.length + '/5 done)</div>' + renderServerResults(engineResults, identifiedName, null);
+              }
+
+              if (eventType === "identified") {
+                identifiedName = data.name;
+              }
+
+              if (eventType === "complete") {
+                finalData = data;
+              }
+            } catch {}
           }
-          html += '</div>';
         }
-        html += '</div>';
-        div.innerHTML = html;
+
+        // Render final results
+        if (finalData) {
+          div.innerHTML = renderServerResults(engineResults, finalData.identified_name, finalData);
+        } else {
+          div.innerHTML = '<div class="status error">Search completed but no results returned.</div>' + renderServerResults(engineResults, identifiedName, null);
+        }
       } catch (err) {
         div.innerHTML = '<div class="status error">Server search failed: ' + escapeHtml(err.message) + '</div>';
       }
+    }
+
+    function renderServerResults(engineResults, identifiedName, finalData) {
+      let html = '';
+
+      // Engine status badges
+      if (engineResults.length > 0) {
+        html += '<div style="display:flex; flex-wrap:wrap; gap:6px; margin:12px 0">';
+        for (const er of engineResults) {
+          const color = er.status === "ok" && er.match_count > 0 ? "var(--green)" : er.status === "ok" ? "var(--orange)" : "var(--danger)";
+          const icon = er.status === "ok" && er.match_count > 0 ? "&#9989;" : er.status === "ok" ? "&#9898;" : "&#10060;";
+          html += '<span style="background:rgba(255,255,255,0.06); border:1px solid ' + color + '; border-radius:6px; padding:4px 10px; font-size:0.82rem">';
+          html += icon + ' <strong>' + escapeHtml(er.engine) + '</strong>';
+          if (er.match_count > 0) html += ' (' + er.match_count + ')';
+          if (er.identified_name) html += ' &mdash; "' + escapeHtml(er.identified_name) + '"';
+          if (er.results_url) html += ' <a href="' + escapeHtml(er.results_url) + '" target="_blank" style="color:var(--accent2); margin-left:4px">view</a>';
+          if (er.error) html += ' <span style="color:var(--danger); font-size:0.78rem">(' + escapeHtml(er.error) + ')</span>';
+          html += '</span>';
+        }
+        html += '</div>';
+      }
+
+      if (identifiedName) {
+        html += '<div style="background:rgba(0,184,148,0.1); border:1px solid rgba(0,184,148,0.3); border-radius:8px; padding:10px 16px; margin:10px 0; font-size:0.9rem">';
+        html += '<strong>Person identified:</strong> ' + escapeHtml(identifiedName);
+        html += '</div>';
+      }
+
+      if (finalData) {
+        // Show social media matches grouped by platform
+        if (finalData.social_media && Object.keys(finalData.social_media).length > 0) {
+          html += '<div style="margin-top:14px"><h4 style="margin-bottom:8px; color:var(--accent2)">Social Media Matches (' + finalData.social_platforms_found + ' platforms)</h4>';
+          for (const [platform, matches] of Object.entries(finalData.social_media)) {
+            html += '<div style="margin-bottom:6px">';
+            html += '<strong style="color:var(--text)">' + escapeHtml(platform) + ':</strong> ';
+            for (const m of matches.slice(0, 3)) {
+              html += '<a href="' + escapeHtml(m.url) + '" target="_blank" rel="noopener" style="color:var(--accent2); margin-right:12px; font-size:0.85rem">' + escapeHtml(m.title || m.url).substring(0, 60) + '</a> ';
+            }
+            html += '</div>';
+          }
+          html += '</div>';
+        }
+
+        // Other matches
+        if (finalData.other_matches && finalData.other_matches.length > 0) {
+          html += '<div style="margin-top:14px"><h4 style="margin-bottom:8px; color:var(--text2)">Other Results</h4>';
+          for (const m of finalData.other_matches.slice(0, 10)) {
+            html += '<div style="padding:4px 0; font-size:0.83rem">';
+            html += '<a href="' + escapeHtml(m.url) + '" target="_blank" rel="noopener" style="color:var(--accent2)">' + escapeHtml(m.title || m.url).substring(0, 80) + '</a>';
+            if (m.snippet) html += '<div style="color:var(--text2); font-size:0.78rem; margin-top:2px">' + escapeHtml(m.snippet).substring(0, 120) + '</div>';
+            html += '</div>';
+          }
+          html += '</div>';
+        }
+
+        if (finalData.total_matches === 0) {
+          html += '<div style="color:var(--text2); margin-top:12px; font-size:0.88rem">No matches found. Try using the individual engine buttons above to search directly in your browser, which often yields better results.</div>';
+        } else {
+          html += '<div style="color:var(--text2); margin-top:10px; font-size:0.8rem">Total: ' + finalData.total_matches + ' unique results found</div>';
+        }
+      }
+
+      return html;
     }
 
     // ═══════════════════════════════════════════════════════

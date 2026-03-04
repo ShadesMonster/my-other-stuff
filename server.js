@@ -1122,10 +1122,11 @@ async function yandexFaceScan(buffer, filename, contentType) {
     const links = extractLinks(html, ["yandex.", "yastatic."]);
     for (const l of links) { if (!results.some(r => r.url === l.url)) results.push({ ...l, source_engine: "yandex" }); }
 
-    // Extract ALL images
-    const images = extractImages(html, ["yandex.", "yastatic.", "avatars.mds"]);
+    // Extract images — only keep ones from known social/profile sites
+    const images = extractImages(html, ["yandex.", "yastatic.", "avatars.mds", "gstatic.com", "googleapis.com"]);
     for (const img of images.slice(0, 20)) {
-      if (!results.some(r => r.url === img)) results.push({ title: "Yandex image match", url: img, thumbnail: img, image_url: img, source_engine: "yandex-img" });
+      const plat = detectPlatform(img);
+      if (plat && !results.some(r => r.url === img)) results.push({ title: "Yandex image match", url: img, thumbnail: img, image_url: img, source_engine: "yandex-img", platform: plat });
     }
 
     // ── JSON API request if we got cbir_id ──
@@ -1143,7 +1144,7 @@ async function yandexFaceScan(buffer, filename, contentType) {
                 const blinks = extractLinks(block.html, ["yandex."]);
                 for (const bl of blinks) { if (!results.some(r => r.url === bl.url)) results.push({ ...bl, source_engine: "yandex-json" }); }
                 const bimgs = extractImages(block.html, ["yandex.", "yastatic."]);
-                for (const bi of bimgs.slice(0, 10)) { if (!results.some(r => r.url === bi)) results.push({ title: "Yandex similar", url: bi, thumbnail: bi, source_engine: "yandex-json" }); }
+                for (const bi of bimgs.slice(0, 10)) { const bPlat = detectPlatform(bi); if (bPlat && !results.some(r => r.url === bi)) results.push({ title: "Yandex similar", url: bi, thumbnail: bi, source_engine: "yandex-json", platform: bPlat }); }
               }
             }
           } catch {
@@ -1161,7 +1162,7 @@ async function yandexFaceScan(buffer, filename, contentType) {
         const flinks = extractLinks(facesResp.body || "", ["yandex."]);
         for (const fl of flinks) { if (!results.some(r => r.url === fl.url)) results.push({ ...fl, source_engine: "yandex-faces" }); }
         const fimgs = extractImages(facesResp.body || "", ["yandex.", "yastatic."]);
-        for (const fi of fimgs.slice(0, 15)) { if (!results.some(r => r.url === fi)) results.push({ title: "Yandex face match", url: fi, thumbnail: fi, source_engine: "yandex-faces" }); }
+        for (const fi of fimgs.slice(0, 15)) { const fPlat = detectPlatform(fi); if (fPlat && !results.some(r => r.url === fi)) results.push({ title: "Yandex face match", url: fi, thumbnail: fi, source_engine: "yandex-faces", platform: fPlat }); }
       } catch {}
     }
 
@@ -1197,9 +1198,11 @@ async function googleFaceScan(buffer, filename, contentType) {
     // Extract links and images
     const links = extractLinks(html, ["google.com", "gstatic.com", "googleapis.com", "youtube.com/embed"]);
     for (const l of links) results.push({ ...l, source_engine: "google" });
-    const images = extractImages(html, ["gstatic.com", "google.com", "googleapis.com"]);
+    // Only keep images from known social/profile sites, not random CDN images
+    const images = extractImages(html, ["gstatic.com", "google.com", "googleapis.com", "googleusercontent.com"]);
     for (const img of images.slice(0, 20)) {
-      if (!results.some(r => r.url === img)) results.push({ title: "Google visual match", url: img, thumbnail: img, source_engine: "google-img" });
+      const plat = detectPlatform(img);
+      if (plat && !results.some(r => r.url === img)) results.push({ title: "Google visual match", url: img, thumbnail: img, source_engine: "google-img", platform: plat });
     }
     // Google /url?q= redirects
     for (const rl of [...html.matchAll(/\/url\?[^"]*q=(https?(?:%3A|:)[^&"]+)/gi)]) {
@@ -1228,9 +1231,10 @@ async function bingFaceScan(buffer, filename, contentType) {
     if (entityMatch) identifiedName = entityMatch[1].trim();
     const links = extractLinks(html, ["bing.com", "microsoft.com", "msn.com"]);
     for (const l of links) results.push({ ...l, source_engine: "bing" });
-    const images = extractImages(html, ["bing.com", "bing.net", "microsoft.com"]);
+    const images = extractImages(html, ["bing.com", "bing.net", "microsoft.com", "msn.com"]);
     for (const img of images.slice(0, 20)) {
-      if (!results.some(r => r.url === img)) results.push({ title: "Bing visual match", url: img, thumbnail: img, source_engine: "bing-img" });
+      const plat = detectPlatform(img);
+      if (plat && !results.some(r => r.url === img)) results.push({ title: "Bing visual match", url: img, thumbnail: img, source_engine: "bing-img", platform: plat });
     }
     for (const r of results) r.platform = detectPlatform(r.url);
     return { engine: "bing", status: "ok", results_url: response.finalUrl, identified_name: identifiedName, matches: results.slice(0, 50), diag };
@@ -1280,7 +1284,8 @@ async function baiduFaceScan(buffer, filename, contentType) {
         for (const l of links) results.push({ ...l, source_engine: "baidu" });
         const images = extractImages(html, ["baidu.com", "bdstatic.com", "bdimg.com"]);
         for (const img of images.slice(0, 15)) {
-          if (!results.some(r => r.url === img)) results.push({ title: "Baidu match", url: img, thumbnail: img, source_engine: "baidu" });
+          const plat = detectPlatform(img);
+          if (plat && !results.some(r => r.url === img)) results.push({ title: "Baidu match", url: img, thumbnail: img, source_engine: "baidu", platform: plat });
         }
       }
     } catch {}
@@ -1352,7 +1357,8 @@ async function faceCheckScan(buffer, filename, contentType) {
       for (const l of links) results.push({ ...l, source_engine: "facecheck" });
       const images = extractImages(html, ["facecheck.id"]);
       for (const img of images.slice(0, 20)) {
-        if (!results.some(r => r.url === img)) results.push({ title: "FaceCheck match", url: img, thumbnail: img, source_engine: "facecheck" });
+        const imgPlat = detectPlatform(img);
+        if (imgPlat && !results.some(r => r.url === img)) results.push({ title: "FaceCheck match", url: img, thumbnail: img, source_engine: "facecheck", platform: imgPlat });
       }
     }
 
@@ -1378,7 +1384,8 @@ async function search4facesScan(buffer, filename, contentType) {
     for (const l of links) results.push({ ...l, source_engine: "search4faces" });
     const images = extractImages(html, ["search4faces.com"]);
     for (const img of images.slice(0, 20)) {
-      if (!results.some(r => r.url === img)) results.push({ title: "search4faces match", url: img, thumbnail: img, source_engine: "search4faces" });
+      const sfPlat = detectPlatform(img);
+      if (sfPlat && !results.some(r => r.url === img)) results.push({ title: "search4faces match", url: img, thumbnail: img, source_engine: "search4faces", platform: sfPlat });
     }
     // Look for VK/OK profile links specifically
     for (const m of [...html.matchAll(/(?:vk\.com|ok\.ru)\/[^\s"'<]+/gi)]) {
@@ -1613,11 +1620,12 @@ app.post("/api/face-scan", async (req, res) => {
             allMatches.push({ ...pl, source_engine: "deep-crawl", platform: plat });
           }
         }
-        // Extract images
+        // Extract images — only from known platforms
         const pageImgs = extractImages(pageResp.body, [domain]);
         for (const pi of pageImgs.slice(0, 5)) {
-          if (!allMatches.some(m => m.url === pi)) {
-            allMatches.push({ title: "Found on " + domain, url: pi, thumbnail: pi, source_engine: "deep-crawl", platform: detectPlatform(pi) });
+          const piPlat = detectPlatform(pi);
+          if (piPlat && !allMatches.some(m => m.url === pi)) {
+            allMatches.push({ title: "Found on " + domain, url: pi, thumbnail: pi, source_engine: "deep-crawl", platform: piPlat });
           }
         }
       }
@@ -2622,7 +2630,7 @@ app.post("/api/mega-search", async (req, res) => {
   res.end();
 });
 
-// ── Simple reverse search (for full image) ──────────────────────────────
+// ── Reverse image search (SSE streaming with real results) ──────────────
 
 app.post("/api/reverse-search", async (req, res) => {
   const { filename } = req.body;
@@ -2633,11 +2641,113 @@ app.post("/api/reverse-search", async (req, res) => {
   const ext = path.extname(filename).toLowerCase();
   const mimeMap = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp" };
   const ct = mimeMap[ext] || "image/jpeg";
-  const [yr, gr, br, tr] = await Promise.allSettled([
-    yandexFaceScan(fileBuffer, filename, ct), googleFaceScan(fileBuffer, filename, ct),
-    bingFaceScan(fileBuffer, filename, ct), tineyeFaceScan(fileBuffer, filename, ct),
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  function send(event, data) { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {} }
+
+  const allMatches = [];
+  const engineStatuses = [];
+  let identifiedName = null;
+
+  // Phase 1: Try reverse image search engines (some may fail due to bot detection)
+  send("phase", { phase: 1, label: "Submitting image to reverse search engines..." });
+
+  const engines = await Promise.allSettled([
+    withRetry(() => yandexFaceScan(fileBuffer, filename, ct)),
+    withRetry(() => googleFaceScan(fileBuffer, filename, ct)),
+    withRetry(() => bingFaceScan(fileBuffer, filename, ct)),
+    withRetry(() => tineyeFaceScan(fileBuffer, filename, ct)),
+    baiduFaceScan(fileBuffer, filename, ct),
   ]);
-  res.json({ results: [yr, gr, br, tr].filter(r => r.status === "fulfilled").map(r => r.value) });
+
+  const engineNames = ["yandex", "google", "bing", "tineye", "baidu"];
+  for (let i = 0; i < engines.length; i++) {
+    const r = engines[i];
+    const val = r.status === "fulfilled" ? r.value : { engine: engineNames[i], status: "error", error: "Failed", matches: [] };
+    if (val.status === "ok") {
+      if (val.identified_name && !identifiedName) identifiedName = val.identified_name;
+      // Filter out low-quality matches (random images from HTML)
+      const goodMatches = (val.matches || []).filter(m => {
+        if (!m.url) return false;
+        const url = m.url.toLowerCase();
+        // Reject raw image URLs from search engine CDNs
+        if (url.match(/\.(jpg|jpeg|png|gif|webp)$/i) && !m.platform) return false;
+        // Reject search engine internal URLs
+        if (url.includes("gstatic.com") || url.includes("yastatic.") || url.includes("bing.net") || url.includes("bdstatic.com")) return false;
+        return true;
+      });
+      allMatches.push(...goodMatches);
+    }
+    const es = {
+      engine: val.engine || engineNames[i], status: val.status, match_count: val.matches?.length || 0,
+      identified_name: val.identified_name, results_url: val.results_url, error: val.error,
+    };
+    engineStatuses.push(es);
+    send("engine_result", es);
+  }
+
+  // Phase 2: If we identified a name, do text-based social search
+  if (identifiedName) {
+    send("phase", { phase: 2, label: `Identified "${identifiedName}" — searching social platforms...` });
+    send("identified", { name: identifiedName });
+
+    const socialQueries = [
+      `"${identifiedName}" site:instagram.com`, `"${identifiedName}" site:twitter.com OR site:x.com`,
+      `"${identifiedName}" site:facebook.com`, `"${identifiedName}" site:linkedin.com`,
+      `"${identifiedName}" site:tiktok.com`, `"${identifiedName}" site:youtube.com`,
+      `"${identifiedName}" site:reddit.com`, `"${identifiedName}" social media profile`,
+    ];
+    for (const q of socialQueries) {
+      try {
+        const wr = await scrapeWebSearch(q);
+        for (const r of wr.slice(0, 3)) {
+          const platform = detectPlatform(r.url);
+          if (platform) {
+            allMatches.push({ title: r.title, url: r.url, snippet: r.snippet, source_engine: "web-search", platform });
+          }
+        }
+      } catch {}
+    }
+    send("social_done", { count: allMatches.length });
+  } else {
+    send("phase", { phase: 2, label: "No name identified from reverse search — try the Face Scan on the Text Search tab for deeper analysis" });
+  }
+
+  // Deduplicate
+  const seen = new Set();
+  const deduped = [];
+  for (const m of allMatches) {
+    const key = (m.url || "").replace(/^https?:\/\/(?:www\.)?/, "").split("?")[0].split("#")[0].toLowerCase().replace(/\/+$/, "");
+    if (key && key.length > 3 && !seen.has(key)) {
+      seen.add(key);
+      if (!m.platform) m.platform = detectPlatform(m.url);
+      deduped.push(m);
+    }
+  }
+
+  // Group by platform
+  const byPlatform = {};
+  const otherMatches = [];
+  for (const m of deduped) {
+    if (m.platform) { if (!byPlatform[m.platform]) byPlatform[m.platform] = []; byPlatform[m.platform].push(m); }
+    else otherMatches.push(m);
+  }
+
+  const engineUrls = {};
+  for (const es of engineStatuses) { if (es.results_url) engineUrls[es.engine] = es.results_url; }
+
+  send("complete", {
+    identified_name: identifiedName,
+    total_matches: deduped.length,
+    social_platforms_found: Object.keys(byPlatform).length,
+    social_media: byPlatform,
+    other_matches: otherMatches.slice(0, 20),
+    engines: engineUrls,
+    engine_statuses: engineStatuses,
+  });
+  res.end();
 });
 
 // ── Cleanup old uploads ─────────────────────────────────────────────────
